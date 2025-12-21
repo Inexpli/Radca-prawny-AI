@@ -2,14 +2,12 @@ import torch
 from rich.rule import Rule
 from rich.text import Text
 from rich.panel import Panel
-from rich.align import Align
-from rich.console import Group
 from rich.console import Console
 from rich.markdown import Markdown
 from unsloth import FastLanguageModel
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, BitsAndBytesConfig
+from transformers import BitsAndBytesConfig
 
 console = Console()
 
