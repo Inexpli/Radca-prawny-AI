@@ -73,5 +73,6 @@ Projekt automatycznie pobiera, przetwarza i indeksuje następujące akty prawne 
 Uruchom interaktywnego agenta:
 ```bash
 python main.py
+```
 
 ![alt text](docs/image.png)
