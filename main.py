@@ -2,6 +2,7 @@ import torch
 from rich.rule import Rule
 from rich.text import Text
 from rich.panel import Panel
+from typing import List, Dict
 from rich.console import Console
 from rich.markdown import Markdown
 from unsloth import FastLanguageModel
@@ -49,7 +50,7 @@ model, tokenizer = FastLanguageModel.from_pretrained(
 
 FastLanguageModel.for_inference(model)
 
-def search_law(query: str, top_k: int = 5):
+def search_law(query: str, top_k: int = 5) -> List[Dict]:
     """
     Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
     """
@@ -70,7 +71,7 @@ def search_law(query: str, top_k: int = 5):
 
     return all_hits[:top_k]
 
-def generate_advice(user_query: str):
+def generate_advice(user_query: str) -> str:
     """Generuje opinię prawną na podstawie zapytania użytkownika."""
     console.print(f"\n[dim]--- Analiza pytania w {len(SEARCH_COLLECTIONS)} dostępnych źródłach... ---[/dim]")
     hits = search_law(user_query, top_k=5)

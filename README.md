@@ -74,5 +74,3 @@ Uruchom interaktywnego agenta:
 ```bash
 python main.py
 ```
-
-![alt text](docs/image.png)
