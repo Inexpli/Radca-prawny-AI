@@ -68,16 +68,76 @@ def search_law(query: str, top_k: int = 5) -> List[Dict]:
             all_hits.extend(hits)
 
     all_hits.sort(key=lambda x: x.score, reverse=True)
-
     return all_hits[:top_k]
 
-def generate_advice(user_query: str) -> str:
-    """Generuje opinię prawną na podstawie zapytania użytkownika."""
-    console.print(f"\n[dim]--- Analiza pytania w {len(SEARCH_COLLECTIONS)} dostępnych źródłach... ---[/dim]")
-    hits = search_law(user_query, top_k=5)
+def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
+    """
+    Inteligentnie przepisuje krótkie pytania na pełne 
+    zapytania do bazy, wykorzystując historię rozmowy.
+    """
+    if not chat_history:
+        return user_query
+
+    short_history = chat_history[-4:] 
+    
+    rewrite_prompt = f"""
+    Twoim zadaniem jest przeredagowanie ostatniego pytania użytkownika tak, aby było w pełni zrozumiałe bez znajomości poprzednich wiadomości.
+    Musisz dodać brakujący kontekst (np. o czym była mowa wcześniej).
+
+    HISTORIA ROZMOWY:
+    {short_history}
+
+    OSTATNIE KRÓTKIE PYTANIE: "{user_query}"
+
+    ZASADA: Nie odpowiadaj na pytanie. Tylko je przepisz na pełne zdanie, które mogę wpisać w Google.
+
+    PEŁNE PYTANIE:
+    """
+
+    messages = [{"role": "user", "content": rewrite_prompt}]
+    inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs_tensor = tokenizer(inputs, return_tensors="pt").to("cuda")
+    
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs_tensor, 
+            max_new_tokens=128,
+            temperature=0.2,  
+            do_sample=True,  
+            use_cache=True
+        )
+    
+    rewritten = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
+    
+    cleaned = rewritten.replace('"', '').replace("PEŁNE PYTANIE:", "").strip()
+    
+    if len(cleaned) < 3: 
+        return user_query
+        
+    return cleaned
+
+def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, List[str]]:
+    """
+    Generuje opinię prawną na podstawie zapytania użytkownika i historii rozmowy.
+    """
+    
+    if chat_history:
+        console.print("[dim]--- Kontekstualizacja pytania... ---[/dim]")
+        try:
+            search_query = rewrite_query(user_query, chat_history)
+            console.print(f"[dim]   Oryginał: [red]{user_query}[/red][/dim]")
+            console.print(f"[dim]   Szukam:   [green]{search_query}[/green][/dim]")
+        except Exception:
+            console.print("[red]   Błąd przepisywania pytania. Używam oryginału.[/red]")
+            search_query = user_query
+    else:
+        search_query = user_query
+
+    console.print(f"\n[dim]--- Wyszukiwanie przepisów... ---[/dim]")
+    hits = search_law(search_query, top_k=5)
     
     context_text = ""
-    sources = []
+    candidates = []
     
     for hit in hits:
         if hit.score > 0.76:
@@ -85,11 +145,16 @@ def generate_advice(user_query: str) -> str:
             source_label = meta.get('source', 'Akt Prawny')
             article_label = meta.get('article', 'Art. ?')
             text_content = meta.get('full_markdown', meta.get('text', ''))
+            
             context_text += f"=== {source_label} | {article_label} ===\n{text_content}\n\n"
-            sources.append(f"{article_label} ({source_label})")
+            
+            candidates.append({
+                "full_label": f"{article_label} ({source_label})",
+                "article_id": article_label
+            })
     
     if not context_text:
-        return "Przepraszam, ale w dostępnych aktach prawnych nie znalazłem przepisów pasujących do Twojego zapytania.", []
+        context_text = "Brak bezpośrednich przepisów w bazie dla tego zapytania."
 
     system_prompt = """Jesteś ekspertem od polskiego prawa. Twoim zadaniem jest interpretacja przepisów i udzielenie profesjonalnej porady.
     Działasz w oparciu o dostarczony KONTEKST PRAWNY, który może zawierać różne kodeksy (Karny, Cywilny, Pracy, Wykroczeń) oraz Konstytucję.
@@ -127,49 +192,63 @@ def generate_advice(user_query: str) -> str:
     * Wariant B: konsekwencja.
 
     ## Podsumowanie
-    Jedno lub dwa zdania streszczenia dla klienta, stanowiące "tl;dr" całej porady.
+    Jedno lub dwa zdania streszczenia dla klienta, stanowiące "tl;dr" całej porady. Najlepiej by było, gdyby zawierało bezpośrednią, konkretną odpowiedź na pytanie użytkownika.
 
     Pamiętaj: Twoim priorytetem jest poprawność merytoryczna oraz ścisłe trzymanie się formatu "Art. ... § ... Kodeksu ...:".
-   """
+    """
 
-    chat = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE UŻYTKOWNIKA:\n{user_query}"},
-    ]
-
-    prompt = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(chat_history)
     
-    console.print("[dim]--- Generowanie opinii asystenta prawnego... ---[/dim]")
+    current_input = f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE UŻYTKOWNIKA:\n{user_query}"
+    messages.append({"role": "user", "content": current_input})
+
+    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs_tensor = tokenizer(prompt, return_tensors="pt").to("cuda")
+    
+    console.print("[dim]--- Generowanie opinii... ---[/dim]")
     
     with torch.no_grad():
         outputs = model.generate(
-            **inputs, 
-            max_new_tokens=1500,
+            **inputs_tensor, 
+            max_new_tokens=2048,
             temperature=0.2,
             repetition_penalty=1.05,
             do_sample=True,
             eos_token_id=tokenizer.eos_token_id
         )
     
-    response = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+    response = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True)
     
-    unique_sources = list(dict.fromkeys(sources))
-    return response, unique_sources
+    final_sources = []
+    for candidate in candidates:
+        if candidate["article_id"] in response:
+            final_sources.append(candidate["full_label"])
+    
+    return response, list(dict.fromkeys(final_sources))
 
 
 if __name__ == "__main__":
     
+    history = [] 
+    MAX_HISTORY = 4
+
     while True:
         try:
-            q = console.input("\n[bold green]Podaj pytanie[/] (lub 'exit'): ")
+            q = console.input("\n[bold green]Podaj pytanie[/] (lub 'exit' / 'clear'): ")
             
             if q.lower() in ['exit', 'wyjdz']: 
                 break
+            
+            if q.lower() in ['clear', 'reset']:
+                history = []
+                console.print("[yellow]Historia konwersacji została wyczyszczona.[/yellow]")
+                continue
+
             if not q.strip(): 
                 continue
             
-            advice, sources = generate_advice(q)
+            advice, sources = generate_advice(q, history)
             
             md_content = Markdown(advice)
             console.print(Panel(md_content, title="Opinia Prawna", border_style="cyan", expand=False))
@@ -177,13 +256,18 @@ if __name__ == "__main__":
             if sources:
                 src_str = ", ".join([f"[bold yellow]{s}[/]" for s in sources])
                 console.print(f"Źródła: {src_str}")
-                
             console.print(Rule(style="dim"))
+            
+            history.append({"role": "user", "content": q}) 
+            history.append({"role": "assistant", "content": advice})
+            
+            if len(history) > MAX_HISTORY:
+                history = history[-MAX_HISTORY:]
 
         except KeyboardInterrupt:
             console.print("\n[red]Przerwano przez użytkownika.[/red]")
             break
-        except Exception as e:
-            console.print(f"\n[bold red]Wystąpił błąd:[/bold red] {e}")
+        except Exception:
+            console.print_exception(show_locals=False)
 
     client.close()
