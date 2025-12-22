@@ -54,7 +54,7 @@ def search_law(query: str, top_k: int = 5) -> List[Dict]:
     """
     Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
     """
-    query_vector = embedder.encode(f"query: {query}", normalize_embeddings=True).tolist()
+    query_vector = embedder.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
     
     all_hits = []
 
