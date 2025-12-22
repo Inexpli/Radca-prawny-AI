@@ -51,7 +51,7 @@ EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-large"
 VECTOR_SIZE = 1024
 
 
-def ensure_directories(path: str):
+def ensure_directories(path: str) -> None:
     """Tworzy katalogi, jeśli nie istnieją."""
     directory = os.path.dirname(path)
     if directory and not os.path.exists(directory):
@@ -154,7 +154,7 @@ def parse_legal_act(text: str, source_label: str) -> List[Dict]:
     return chunks
 
 
-def process_and_index(client: QdrantClient, embedder: SentenceTransformer, config: Dict):
+def process_and_index(client: QdrantClient, embedder: SentenceTransformer, config: Dict) -> None:
     """
     Główna logika przetwarzania pojedynczego źródła:
     Konwersja -> Parsowanie -> Embeddings -> Qdrant
