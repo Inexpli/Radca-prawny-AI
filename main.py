@@ -16,12 +16,7 @@ MODEL_ID = "speakleash/Bielik-11B-v2.6-Instruct"
 QDRANT_PATH = "./qdrant_data"
 EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
 SEARCH_COLLECTIONS = [
-    "kodeks_karny",
-    "kodeks_cywilny",
-    "kodeks_pracy",
-    "kodeks_rodzinny_i_opiekunczy",
-    "kodeks_wykroczen",
-    "konstytucja_rp"
+    "polskie_prawo",
 ]
 
 print(Text("\n\n"))
