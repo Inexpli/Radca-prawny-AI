@@ -6,6 +6,8 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from sentence_transformers import SentenceTransformer
 from docling.document_converter import DocumentConverter
+from fastembed import SparseTextEmbedding
+
 
 MAIN_COLLECTION = "polskie_prawo"
 
@@ -48,8 +50,10 @@ DATA_SOURCES = [
     }
 ]
 
+
 QDRANT_PATH = "./qdrant_data"
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-large"
+SPARSE_MODEL_NAME = "Qdrant/bm25"
 
 
 def ensure_directories(path: str) -> None:
@@ -168,6 +172,7 @@ def process_and_index(client: QdrantClient, embedder: SentenceTransformer, confi
     source_label = config["source_label"]
     
     embedding_dim = embedder.get_sentence_embedding_dimension()
+    sparse_embedder = SparseTextEmbedding(model_name=SPARSE_MODEL_NAME)
 
     print(f"\n--- Przetwarzanie: {source_label} ({collection_name}) ---")
 
@@ -186,10 +191,15 @@ def process_and_index(client: QdrantClient, embedder: SentenceTransformer, confi
         if not client.collection_exists(collection_name):
             client.create_collection(
                 collection_name=collection_name,
-                vectors_config=models.VectorParams(
-                    size=embedding_dim,
-                    distance=models.Distance.DOT
-                )
+                vectors_config={
+                    "dense": models.VectorParams(
+                        size=embedding_dim,
+                        distance=models.Distance.DOT
+                    )
+                },
+                sparse_vectors_config={
+                    "sparse": models.SparseVectorParams()
+                }
             )
             print(f"LOG: Utworzono nową kolekcję: {collection_name}")
         else:
@@ -202,12 +212,8 @@ def process_and_index(client: QdrantClient, embedder: SentenceTransformer, confi
             for art in articles
         ]
 
-        all_embeddings = embedder.encode(
-            documents_to_embed, 
-            batch_size=64, 
-            normalize_embeddings=True,
-            show_progress_bar=True 
-        )
+        dense_embeddings = embedder.encode(documents_to_embed, normalize_embeddings=True)
+        sparse_embeddings = list(sparse_embedder.embed(documents_to_embed))
 
         print(f"LOG: Przygotowywanie {len(articles)} punktów...")
         points = []
@@ -215,7 +221,15 @@ def process_and_index(client: QdrantClient, embedder: SentenceTransformer, confi
             unique_string = f"{art['metadata']['source']}_{art['metadata']['article']}"
             point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, unique_string))
             
-            payload = {
+            dense_vec = dense_embeddings[idx].tolist()
+            sparse_result = sparse_embeddings[idx]
+            
+            qdrant_sparse_vec = models.SparseVector(
+                indices=sparse_result.indices.tolist(),
+                values=sparse_result.values.tolist()
+            )
+            
+            payload_data = {
                 "text": art['text'],
                 "chapter": art['metadata']['chapter'],
                 "article": art['metadata']['article'],
@@ -225,8 +239,11 @@ def process_and_index(client: QdrantClient, embedder: SentenceTransformer, confi
             
             points.append(models.PointStruct(
                 id=point_id,
-                vector=all_embeddings[idx].tolist(),
-                payload=payload
+                vector={
+                    "dense": dense_vec,
+                    "sparse": qdrant_sparse_vec
+                },
+                payload=payload_data
             ))
 
         client.upload_points(

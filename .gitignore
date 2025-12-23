@@ -3,3 +3,4 @@
 __pycache__/
 *.pyc
 unsloth_compiled_cache/
+qdrant_data/collection/

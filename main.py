@@ -6,18 +6,18 @@ from typing import List, Dict
 from rich.console import Console
 from rich.markdown import Markdown
 from unsloth import FastLanguageModel
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
 from transformers import BitsAndBytesConfig
+from fastembed import SparseTextEmbedding
 
 console = Console()
 
 MODEL_ID = "speakleash/Bielik-11B-v2.6-Instruct"
 QDRANT_PATH = "./qdrant_data"
 EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
-SEARCH_COLLECTIONS = [
-    "polskie_prawo",
-]
+SPARSE_MODEL = "Qdrant/bm25"
+SEARCH_COLLECTION = "polskie_prawo"
 
 print(Text("\n\n"))
 console.print(Rule("Uruchamianie radcy prawnego AI na bazie Bielik-11B-v2.6-Instruct", style="bold blue"))
@@ -25,6 +25,7 @@ console.print(Rule("Uruchamianie radcy prawnego AI na bazie Bielik-11B-v2.6-Inst
 print("1. Ładowanie Qdrant i modelu embeddingowego...")
 client = QdrantClient(path=QDRANT_PATH)
 embedder = SentenceTransformer(EMBEDDING_MODEL, device="cuda")
+sparse_embedder = SparseTextEmbedding(model_name=SPARSE_MODEL)
 
 print(f"2. Ładowanie modelu {MODEL_ID}...")
 bnb_config = BitsAndBytesConfig(
@@ -49,18 +50,36 @@ def search_law(query: str, top_k: int = 5) -> List[Dict]:
     """
     Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
     """
-    query_vector = embedder.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
+    dense_vector = embedder.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
+
+    sparse_result = list(sparse_embedder.embed([query]))[0]
+
+    qdrant_sparse_vector = models.SparseVector(
+        indices=sparse_result.indices.tolist(),
+        values=sparse_result.values.tolist()
+    )
     
     all_hits = []
 
-    for collection in SEARCH_COLLECTIONS:
-        if client.collection_exists(collection):
-            hits = client.query_points(
-                collection_name=collection,
-                query=query_vector,
-                limit=3
-            ).points
-            all_hits.extend(hits)
+    if client.collection_exists(SEARCH_COLLECTION):
+        hits = client.query_points(
+            collection_name=SEARCH_COLLECTION,
+            prefetch=[
+                models.Prefetch(
+                    query=dense_vector,
+                    using="dense",
+                    limit=20,
+                ),
+                models.Prefetch(
+                    query=qdrant_sparse_vector,
+                    using="sparse",
+                    limit=20,
+                )
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=top_k
+        ).points
+        all_hits.extend(hits)
 
     all_hits.sort(key=lambda x: x.score, reverse=True)
     return all_hits[:top_k]
