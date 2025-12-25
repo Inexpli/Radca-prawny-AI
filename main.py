@@ -8,7 +8,6 @@ from rich.markdown import Markdown
 from unsloth import FastLanguageModel
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
-from transformers import BitsAndBytesConfig
 from fastembed import SparseTextEmbedding
 
 console = Console()
@@ -22,20 +21,14 @@ SEARCH_COLLECTION = "polskie_prawo"
 print(Text("\n\n"))
 console.print(Rule("Uruchamianie radcy prawnego AI na bazie Bielik-11B-v2.6-Instruct", style="bold blue"))
 
-print("1. Ładowanie Qdrant i modelu embeddingowego...")
+print("1. Ładowanie Qdrant i modeli embeddingowych...")
 client = QdrantClient(path=QDRANT_PATH)
-embedder = SentenceTransformer(EMBEDDING_MODEL, device="cuda")
+dense_embedder = SentenceTransformer(EMBEDDING_MODEL, device="cuda")
 sparse_embedder = SparseTextEmbedding(model_name=SPARSE_MODEL)
 
 print(f"2. Ładowanie modelu {MODEL_ID}...")
-bnb_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_compute_dtype=torch.bfloat16
-)
 
-print(f"3. Inicjalizacja tokenizera dla {MODEL_ID}...")
+print(f"3. Inicjalizacja tokenizera...")
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = MODEL_ID,
@@ -50,8 +43,7 @@ def search_law(query: str, top_k: int = 5) -> List[Dict]:
     """
     Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
     """
-    dense_vector = embedder.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
-
+    dense_vector = dense_embedder.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
     sparse_result = list(sparse_embedder.embed([query]))[0]
 
     qdrant_sparse_vector = models.SparseVector(
@@ -81,7 +73,6 @@ def search_law(query: str, top_k: int = 5) -> List[Dict]:
         ).points
         all_hits.extend(hits)
 
-    all_hits.sort(key=lambda x: x.score, reverse=True)
     return all_hits[:top_k]
 
 def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
@@ -149,24 +140,23 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
 
     console.print(f"\n[dim]--- Wyszukiwanie przepisów... ---[/dim]")
     hits = search_law(search_query, top_k=5)
-    
+
     context_text = ""
     candidates = []
     
     for hit in hits:
-        if hit.score > 0.76:
-            meta = hit.payload
-            source_label = meta.get('source', 'Akt Prawny')
-            article_label = meta.get('article', 'Art. ?')
-            text_content = meta.get('full_markdown', meta.get('text', ''))
-            
-            context_text += f"=== {source_label} | {article_label} ===\n{text_content}\n\n"
-            
-            candidates.append({
-                "full_label": f"{article_label} ({source_label})",
-                "article_id": article_label
-            })
-    
+        meta = hit.payload
+        source_label = meta.get('source', 'Akt Prawny')
+        article_label = meta.get('article', 'Art. ?')
+        text_content = meta.get('full_markdown', meta.get('text', ''))
+        
+        context_text += f"=== {source_label} | {article_label} ===\n{text_content}\n\n"
+        
+        candidates.append({
+            "full_label": f"{article_label} ({source_label})",
+            "article_id": article_label
+        })
+        
     if not context_text:
         context_text = "Brak bezpośrednich przepisów w bazie dla tego zapytania."
 
