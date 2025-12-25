@@ -1,4 +1,4 @@
-# ⚖️ Radca Prawny Ai
+# ⚖️ Radca Prawny AI
 
 **Radca Prawny AI** to zaawansowany system **RAG (Retrieval-Augmented Generation)** zaprojektowany do udzielania porad prawnych w oparciu o polskie ustawodawstwo. Projekt działa w 100% lokalnie, wykorzystując moc obliczeniową karty graficznej, co gwarantuje pełną prywatność danych.
 
