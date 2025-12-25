@@ -98,4 +98,4 @@ python main.py
 ![alt text](docs/image4.png)
 
 ## 📄 Licencja
-MIT License
+- MIT License
