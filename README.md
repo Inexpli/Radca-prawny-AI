@@ -75,6 +75,8 @@ Uruchom interaktywnego agenta:
 python main.py
 ```
 
+![alt text](docs/image0.png)
 ![alt text](docs/image1.png)
 ![alt text](docs/image2.png)
-
+![alt text](docs/image3.png)
+![alt text](docs/image4.png)
