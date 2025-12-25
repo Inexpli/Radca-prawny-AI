@@ -84,8 +84,7 @@ streamlit run app.py
 ```
 
 ![alt text](docs/image0.png)
-![alt text](docs/image1.png)
-![alt text](docs/image2.png)
+
 
 ### 2. Wersja CLI
 Klasyczny terminal dla szybkiego testowania i debugowania.
