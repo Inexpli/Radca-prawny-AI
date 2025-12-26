@@ -91,17 +91,16 @@ def rewrite_query(user_query, chat_history) -> str:
     short_history = chat_history[-4:] 
     
     rewrite_prompt = f"""
-    Twoim zadaniem jest przeredagowanie ostatniego pytania użytkownika tak, aby było w pełni zrozumiałe bez znajomości poprzednich wiadomości.
-    Musisz dodać brakujący kontekst (np. o czym była mowa wcześniej).
+    Jesteś prawnikiem-lingwistą. Twoim zadaniem jest przetłumaczenie potocznego pytania klienta na profesjonalne zapytanie do wyszukiwarki prawniczej.
+    ZASADY:
+    1. Zamień słowa potoczne na ustawowe (np. "morderstwo" -> "zabójstwo", "ukradł auto" -> "zabór pojazdu mechanicznego").
+    2. Uwzględnij kontekst z historii rozmowy (jeśli jest).
+    3. Wynik ma być jednym, precyzyjnym zdaniem pytającym.
 
-    HISTORIA ROZMOWY:
-    {short_history}
+    HISTORIA: {short_history}
+    OSTATNIE PYTANIE: "{user_query}"
 
-    OSTATNIE KRÓTKIE PYTANIE: "{user_query}"
-
-    ZASADA: Nie odpowiadaj na pytanie. Tylko je przepisz na pełne zdanie, które mogę wpisać w Google.
-
-    PEŁNE PYTANIE:
+    PROFESJONALNE ZAPYTANIE:
     """
 
     messages = [{"role": "user", "content": rewrite_prompt}]
@@ -112,20 +111,20 @@ def rewrite_query(user_query, chat_history) -> str:
         outputs = model.generate(
             **inputs_tensor, 
             max_new_tokens=128,
-            temperature=0.2,  
+            temperature=0.1,  
             do_sample=True,  
             use_cache=True
         )
     
     rewritten = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
-    cleaned = rewritten.replace('"', '').replace("PEŁNE PYTANIE:", "").strip()
+    cleaned = rewritten.replace('"', '').replace("PROFESJONALNE ZAPYTANIE:", "").strip()
 
     if len(cleaned) < 3: 
         return user_query
 
     return cleaned
 
-def search_law(query: str, top_k: int = 5) -> List[Dict]:
+def search_law(query: str, top_k: int = 10) -> List[Dict]:
     """
     Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
     """
@@ -143,8 +142,14 @@ def search_law(query: str, top_k: int = 5) -> List[Dict]:
             hits = client.query_points(
                 collection_name=collection,
                 prefetch=[
-                    models.Prefetch(query=dense_vec, using="dense", limit=20),
-                    models.Prefetch(query=qdrant_sparse, using="sparse", limit=20),
+                    models.Prefetch(
+                        query=dense_vec, 
+                        using="dense",
+                        limit=30),
+                    models.Prefetch(
+                        query=qdrant_sparse, 
+                        using="sparse", 
+                        limit=30),
                 ],
                 query=models.FusionQuery(fusion=models.Fusion.RRF),
                 limit=top_k
@@ -265,6 +270,7 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
                     temperature=0.2,
                     repetition_penalty=1.05,
                     do_sample=True,
+                    use_cache=True,
                     eos_token_id=tokenizer.eos_token_id
                 )
             
