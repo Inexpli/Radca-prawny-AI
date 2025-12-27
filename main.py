@@ -32,14 +32,14 @@ print(f"3. Inicjalizacja tokenizera...")
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name = MODEL_ID,
-    max_seq_length = 8192,
+    max_seq_length = 32768,
     dtype = None,
     load_in_4bit = True,
 )
 
 FastLanguageModel.for_inference(model)
 
-def search_law(query: str, top_k: int = 10) -> List[Dict]:
+def search_law(query: str, top_k: int = 10, score_threshold: float = 0.6) -> List[Dict]:
     """
     Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
     """
@@ -71,7 +71,9 @@ def search_law(query: str, top_k: int = 10) -> List[Dict]:
             query=models.FusionQuery(fusion=models.Fusion.RRF),
             limit=top_k
         ).points
-        all_hits.extend(hits)
+
+        valid_hits = [hit for hit in hits if hit.score > score_threshold]
+        all_hits.extend(valid_hits)
 
     return all_hits[:top_k]
 
@@ -141,9 +143,6 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
     hits = search_law(search_query, top_k=5)
 
     context_text = ""
-    candidates = []
-    
-    # TODO: ZMIENIĆ WYCIĄGANIE ARTYKUŁÓW NA MNIEJ RYGORYSTYCZNE
     for hit in hits:
         meta = hit.payload
         source_label = meta.get('source', 'Akt Prawny')
@@ -152,15 +151,11 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
         
         context_text += f"=== {source_label} | {article_label} ===\n{text_content}\n\n"
         
-        candidates.append({
-            "full_label": f"{article_label} ({source_label})",
-            "article_id": article_label
-        })
-        
     if not context_text:
         context_text = "Brak bezpośrednich przepisów w bazie dla tego zapytania."
 
-    system_prompt = """Jesteś ekspertem od polskiego prawa. Twoim zadaniem jest interpretacja przepisów i udzielenie profesjonalnej porady.
+    system_prompt = """
+    Jesteś ekspertem od polskiego prawa. Twoim zadaniem jest interpretacja przepisów i udzielenie profesjonalnej porady.
     Działasz w oparciu o dostarczony KONTEKST PRAWNY, który może zawierać różne kodeksy (Karny, Cywilny, Pracy, Wykroczeń) oraz Konstytucję.
 
     ZASADY:
@@ -171,6 +166,9 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
     - Podstawa Prawna (wymień artykuły i nazwy aktów)
     - Analiza (interpretacja sytuacji w świetle przepisów)
     - Konkluzja (jasne wnioski dla klienta)
+    5. Najważniejsze - jeśli brak przepisów w kontekście, przyznaj to otwarcie i zasugeruj konsultację z prawnikiem.
+    6. Nie wymyślaj przepisów ani nie odwołuj się do nieistniejących artykułów.
+    7. Nie naciągaj kontekstu - jeśli pytanie wykracza poza dostarczone przepisy, przyznaj to.
 
     RESTKRYKCYJNE ZASADY FORMATOWANIA (MODEL MUSI ICH PRZESTRZEGAĆ):
     Każda odpowiedź musi składać się wyłącznie z 4 sekcji oznaczonych nagłówkami H2 (##). Nie dodawaj żadnego tekstu przed pierwszą sekcją ani po ostatniej.
@@ -198,7 +196,12 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
     ## Podsumowanie
     Jedno lub dwa zdania streszczenia dla klienta, stanowiące "tl;dr" całej porady. Najlepiej by było, gdyby zawierało bezpośrednią, konkretną odpowiedź na pytanie użytkownika.
 
-    Pamiętaj: Twoim priorytetem jest poprawność merytoryczna oraz ścisłe trzymanie się formatu "Art. ... § ... Kodeksu ...:".
+    Na końcu odpowiedzi dołącz sekcję Źródła, gdzie w jednej linii wymienisz wszystkie cytowane artykuły w formacie:
+    BEZWZGLĘDNY FORMAT WYPISYWANIA ŹRÓDEŁ:
+    "\n\n---\n📚 **Źródła:** Art. {numer} {Pełna Nazwa Kodeksu}."
+    Przykład:
+    "\n\n---\n📚 **Źródła:** Art. 134, 135, 136, 148 Kodeksu Karnego."
+    Nie zapisuj tego jako osobny nagłowek, tylko jako zwykły tekst od nowej linii oraz nie wypisuj paragrafów w źródłach.
     """
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -225,12 +228,7 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
     
     response = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True)
     
-    final_sources = []
-    for candidate in candidates:
-        if candidate["article_id"] in response:
-            final_sources.append(candidate["full_label"])
-    
-    return response, list(dict.fromkeys(final_sources))
+    return response
 
 
 if __name__ == "__main__":
@@ -253,15 +251,10 @@ if __name__ == "__main__":
             if not q.strip(): 
                 continue
             
-            advice, sources = generate_advice(q, history)
+            advice = generate_advice(q, history)
             
             md_content = Markdown(advice)
             console.print(Panel(md_content, title="Opinia Prawna", border_style="cyan", expand=False))
-            
-            if sources:
-                src_str = ", ".join([f"[bold yellow]{s}[/]" for s in sources])
-                console.print(f"Źródła: {src_str}")
-            console.print(Rule(style="dim"))
             
             history.append({"role": "user", "content": q}) 
             history.append({"role": "assistant", "content": advice})
