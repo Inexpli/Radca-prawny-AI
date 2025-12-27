@@ -1,6 +1,9 @@
 import os
+import glob
 import json
+import uuid
 import streamlit as st
+from datetime import datetime
 from typing import List, Dict, Tuple
 
 
@@ -16,25 +19,11 @@ st.markdown("Twój prywatny asystent prawny.")
 loading_placeholder = st.empty()
 loading_placeholder.info("🚀 Inicjalizacja systemu... \n\n 🛠️ Ładowanie bibliotek AI (to może chwilę potrwać)...")
 
-HISTORY_FILE = "chat_history.json"
+SESSIONS_DIR = "sessions"
+SEARCH_COLLECTION = "polskie_prawo"
 
-def load_chat_history() -> List[Dict]:
-    """Wczytuje historię z pliku JSON jeśli istnieje."""
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return []
-    return []
-
-def save_chat_history(messages) -> None:
-    """Zapisuje historię do pliku JSON."""
-    try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(messages, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        print(f"Błąd zapisu historii: {e}")
+if not os.path.exists(SESSIONS_DIR):
+    os.makedirs(SESSIONS_DIR)
 
 @st.cache_resource
 def load_resources() -> Tuple:
@@ -68,7 +57,7 @@ def load_resources() -> Tuple:
 
 try:
     client, dense_embedder, sparse_embedder, model, tokenizer = load_resources()
-    
+
     loading_placeholder.empty()
     st.toast("System gotowy do pracy!", icon="✅")
 except Exception as e:
@@ -78,7 +67,105 @@ except Exception as e:
 import torch
 from qdrant_client import models
 
-SEARCH_COLLECTIONS = ["polskie_prawo"]
+
+def get_session_file_path(session_id):
+    return os.path.join(SESSIONS_DIR, f"{session_id}.json")
+
+def save_current_session():
+    """Zapisuje bieżącą sesję do pliku JSON."""
+    if not st.session_state.messages:
+        return
+    
+    if "title" not in st.session_state:
+        user_msgs = [m['content'] for m in st.session_state.messages if m['role'] == 'user']
+        if user_msgs:
+            question = user_msgs[0]
+            st.session_state.title = name_session(question)
+
+    data = {
+        "id": st.session_state.session_id,
+        "title": st.session_state.get("title", "Bez tytułu"),
+        "timestamp": datetime.now().isoformat(),
+        "messages": st.session_state.messages
+    }
+    
+    file_path = get_session_file_path(st.session_state.session_id)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+def load_session_by_id(session_id):
+    """Wczytuje sesję z pliku."""
+    file_path = get_session_file_path(session_id)
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            st.session_state.session_id = data["id"]
+            st.session_state.messages = data["messages"]
+            st.session_state.title = data.get("title", "Bez tytułu")
+    else:
+        init_new_session()
+
+def init_new_session():
+    """Resetuje stan do nowej, czystej rozmowy."""
+    st.session_state.session_id = str(uuid.uuid4())
+    st.session_state.messages = []
+    if "title" in st.session_state:
+        del st.session_state.title
+
+def list_past_sessions():
+    """Zwraca listę dostępnych plików sesji posortowaną od najnowszej."""
+    files = glob.glob(os.path.join(SESSIONS_DIR, "*.json"))
+    sessions = []
+    for f in files:
+        try:
+            with open(f, "r", encoding="utf-8") as file:
+                data = json.load(file)
+                sessions.append({
+                    "id": data["id"],
+                    "title": data.get("title", "Bez tytułu"),
+                    "path": f,
+                    "time": os.path.getmtime(f)
+                })
+        except:
+            continue
+    return sorted(sessions, key=lambda x: x["time"], reverse=True)
+
+if "session_id" not in st.session_state:
+    init_new_session()
+
+def name_session(question: str) -> str:
+    """Nazywa sesję na podstawie pierwszego pytania użytkownika."""
+    prompt = f"""
+    Jesteś asystentem, który tworzy zwięzłe tytuły dla rozmów na podstawie pierwszego pytania użytkownika.
+    ZASADY:
+    1. Tytuł musi być krótki (maksymalnie 5 słów).
+    2. Tytuł musi być precyzyjny i odzwierciedlać temat pytania.
+    3. Unikaj ogólnych fraz jak "Rozmowa z AI" czy "Pytanie prawne".
+    4. Używaj języka polskiego.
+    5. Wypisz tytuł w formie, którą mogę wpisać w Google.
+    PIERWSZE PYTANIE: "{question}"
+    TYTUŁ ROZMOWY:
+    """
+    messages = [{"role": "user", "content": prompt}]
+    inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs_tensor = tokenizer(inputs, return_tensors="pt").to("cuda")
+    
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs_tensor, 
+            max_new_tokens=32,
+            temperature=0.3,  
+            do_sample=True,  
+            use_cache=True
+        )
+    
+    title = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
+    cleaned_title = title.replace('"', '').strip()
+
+    if len(cleaned_title) < 3: 
+        return "Nowa rozmowa"
+
+    return cleaned_title
 
 def rewrite_query(user_query, chat_history) -> str:
     """
@@ -124,7 +211,7 @@ def rewrite_query(user_query, chat_history) -> str:
 
     return cleaned
 
-def search_law(query: str, top_k: int = 10) -> List[Dict]:
+def search_law(query: str, top_k: int = 10, score_threshold: float = 0.6) -> List[Dict]:
     """
     Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
     """
@@ -137,39 +224,51 @@ def search_law(query: str, top_k: int = 10) -> List[Dict]:
     )
 
     all_hits = []
-    for collection in SEARCH_COLLECTIONS:
-        if client.collection_exists(collection):
-            hits = client.query_points(
-                collection_name=collection,
-                prefetch=[
-                    models.Prefetch(
-                        query=dense_vec, 
-                        using="dense",
-                        limit=30),
-                    models.Prefetch(
-                        query=qdrant_sparse, 
-                        using="sparse", 
-                        limit=30),
-                ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
-                limit=top_k
-            ).points
-            all_hits.extend(hits)
-            
+
+    if client.collection_exists(SEARCH_COLLECTION):
+        hits = client.query_points(
+            collection_name=SEARCH_COLLECTION,
+            prefetch=[
+                models.Prefetch(
+                    query=dense_vec,
+                    using="dense",
+                    limit=30,
+                ),
+                models.Prefetch(
+                    query=qdrant_sparse,
+                    using="sparse",
+                    limit=30,
+                )
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=top_k
+        ).points
+
+        valid_hits = [hit for hit in hits if hit.score > score_threshold]
+        all_hits.extend(valid_hits)
+
     return all_hits[:top_k]
 
 with st.sidebar:
-    st.title("⚙️ Ustawienia")
-    if st.button("Wyczyść historię"):
-        st.session_state.messages = []
-        if os.path.exists(HISTORY_FILE):
-            os.remove(HISTORY_FILE)
+    st.title("Historia")
+    
+    if st.button("Nowy czat", use_container_width=True, type="secondary"):
+        save_current_session()
+        init_new_session()
         st.rerun()
-        
-    st.info("Status: Online 🟢\n\nTryb: Persisted (Dysk)")
+    
+    st.markdown("---")
+    st.caption("Poprzednie rozmowy:")
+    
+    sessions = list_past_sessions()
+    for s in sessions:
+        if st.button(s["title"], key=s["id"], use_container_width=True):
+            save_current_session()
+            load_session_by_id(s["id"]) 
+            st.rerun()
 
-if "messages" not in st.session_state:
-    st.session_state.messages = load_chat_history()
+    st.markdown("---")
+    st.info("Status: Online 🟢  \nTryb: Persisted (Dysk)")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -178,9 +277,9 @@ for message in st.session_state.messages:
 if prompt := st.chat_input("O co chcesz zapytać?"):
     st.chat_message("user").markdown(prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
-    save_chat_history(st.session_state.messages)
 
-    candidates = [] 
+    save_current_session()
+
     context_text = ""
 
     with st.status("Analizuję przepisy...", expanded=True) as status:
@@ -198,11 +297,6 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
                 text_content = meta.get('full_markdown', meta.get('text', ''))
                 
                 context_text += f"=== {source_label} | {article_label} ===\n{text_content}\n\n"
-                
-                candidates.append({
-                    "full_label": f"{article_label} ({source_label})",
-                    "article_id": article_label
-                })
         else:
             context_text = "Brak przepisów."
             
@@ -212,7 +306,8 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
         message_placeholder = st.empty()
         
         with st.spinner("Piszę opinię prawną..."):
-            system_prompt = """Jesteś ekspertem od polskiego prawa. Twoim zadaniem jest interpretacja przepisów i udzielenie profesjonalnej porady.
+            system_prompt = """
+            Jesteś ekspertem od polskiego prawa. Twoim zadaniem jest interpretacja przepisów i udzielenie profesjonalnej porady.
             Działasz w oparciu o dostarczony KONTEKST PRAWNY, który może zawierać różne kodeksy (Karny, Cywilny, Pracy, Wykroczeń) oraz Konstytucję.
 
             ZASADY:
@@ -223,6 +318,9 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
             - Podstawa Prawna (wymień artykuły i nazwy aktów)
             - Analiza (interpretacja sytuacji w świetle przepisów)
             - Konkluzja (jasne wnioski dla klienta)
+            5. Najważniejsze - jeśli brak przepisów w kontekście, przyznaj to otwarcie i zasugeruj konsultację z prawnikiem.
+            6. Nie wymyślaj przepisów ani nie odwołuj się do nieistniejących artykułów.
+            7. Nie naciągaj kontekstu - jeśli pytanie wykracza poza dostarczone przepisy, przyznaj to.
 
             RESTKRYKCYJNE ZASADY FORMATOWANIA (MODEL MUSI ICH PRZESTRZEGAĆ):
             Każda odpowiedź musi składać się wyłącznie z 4 sekcji oznaczonych nagłówkami H2 (##). Nie dodawaj żadnego tekstu przed pierwszą sekcją ani po ostatniej.
@@ -250,7 +348,12 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
             ## Podsumowanie
             Jedno lub dwa zdania streszczenia dla klienta, stanowiące "tl;dr" całej porady. Najlepiej by było, gdyby zawierało bezpośrednią, konkretną odpowiedź na pytanie użytkownika.
 
-            Pamiętaj: Twoim priorytetem jest poprawność merytoryczna oraz ścisłe trzymanie się formatu "Art. ... § ... Kodeksu ...:".
+            Na końcu odpowiedzi dołącz sekcję Źródła, gdzie w jednej linii wymienisz wszystkie cytowane artykuły w formacie:
+            BEZWZGLĘDNY FORMAT WYPISYWANIA ŹRÓDEŁ:
+            "\n\n---\n📚 **Źródła:** Art. {numer} {Pełna Nazwa Kodeksu}."
+            Przykład:
+            "\n\n---\n📚 **Źródła:** Art. 134, 135, 136, 148 Kodeksu Karnego."
+            Nie zapisuj tego jako osobny nagłowek, tylko jako zwykły tekst od nowej linii oraz nie wypisuj paragrafów w źródłach.
             """
             
             messages_payload = [{"role": "system", "content": system_prompt}]
@@ -275,19 +378,10 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
                 )
             
             response = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True)
-    
-            final_sources = []
-            for candidate in candidates:
-                if candidate["article_id"] in response:
-                    final_sources.append(candidate["full_label"])
 
-            if final_sources:
-                footer = "\n\n---\n📚 **Źródła:** " + ", ".join(final_sources)
-                final_response = response + footer
-            else:
-                final_response = response
+        message_placeholder.markdown(response)
 
-        message_placeholder.markdown(final_response)
-
-    st.session_state.messages.append({"role": "assistant", "content": final_response})
-    save_chat_history(st.session_state.messages)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    save_current_session()
+    if len(st.session_state.messages) == 2:
+        st.rerun()
