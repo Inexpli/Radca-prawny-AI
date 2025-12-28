@@ -57,7 +57,7 @@ Projekt automatycznie pobiera, przetwarza i indeksuje następujące akty prawne 
 
 1.  **Sklonuj repozytorium:**
     ```bash
-    git clone [https://github.com/Inexpli/Radca-prawny-AI](https://github.com/Inexpli/Radca-prawny-AI)
+    git clone https://github.com/Inexpli/Radca-prawny-AI
     cd Radca-prawny-AI
     ```
 
