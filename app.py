@@ -268,9 +268,14 @@ with st.sidebar:
             div[data-testid="column"] {
                 display: flex;
                 align-items: center; 
+
+            }
+            div[data-testid="stVerticalBlock"] {
+                justify-content: center;
+                align-items: center;
             }
             div[data-testid="stVerticalBlock"] > div > div[data-testid="stHorizontalBlock"] {
-                gap: 0.5rem;
+                gap: 0.3rem;
             }
         </style>
         """, unsafe_allow_html=True

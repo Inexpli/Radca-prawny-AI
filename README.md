@@ -90,7 +90,6 @@ streamlit run app.py
 
 ![alt text](docs/image0.png)
 ![alt text](docs/image1.png)
-![alt text](docs/image2.png)
 
 ### 2. Wersja CLI
 Klasyczny terminal dla szybkiego testowania i debugowania.
@@ -99,8 +98,8 @@ Klasyczny terminal dla szybkiego testowania i debugowania.
 python main.py
 ```
 
+![alt text](docs/image2.png)
 ![alt text](docs/image3.png)
-![alt text](docs/image4.png)
 
 ## 📄 Licencja
 - MIT License
