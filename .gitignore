@@ -5,3 +5,4 @@ __pycache__/
 qdrant_data/
 unsloth_compiled_cache/
 chat_history.json
+sessions/
