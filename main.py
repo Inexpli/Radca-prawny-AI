@@ -6,116 +6,131 @@ from typing import List, Dict
 from rich.console import Console
 from rich.markdown import Markdown
 from unsloth import FastLanguageModel
-from qdrant_client import QdrantClient, models
-from sentence_transformers import SentenceTransformer
 from fastembed import SparseTextEmbedding
+from qdrant_client import QdrantClient, models
+from sentence_transformers import SentenceTransformer, CrossEncoder
+from config import CONFIG
 
 console = Console()
-
-MODEL_ID = "speakleash/Bielik-11B-v2.6-Instruct"
-QDRANT_PATH = "./qdrant_data"
-EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
-SPARSE_MODEL = "Qdrant/bm25"
-SEARCH_COLLECTION = "polskie_prawo"
 
 print(Text("\n\n"))
 console.print(Rule("Uruchamianie radcy prawnego AI na bazie Bielik-11B-v2.6-Instruct", style="bold blue"))
 
-print("1. Ładowanie Qdrant i modeli embeddingowych...")
-client = QdrantClient(path=QDRANT_PATH)
-dense_embedder = SentenceTransformer(EMBEDDING_MODEL, device="cuda")
-sparse_embedder = SparseTextEmbedding(model_name=SPARSE_MODEL)
+print("1. Ładowanie Qdrant...")
 
-print(f"2. Ładowanie modelu {MODEL_ID}...")
+client = QdrantClient(path=CONFIG["QDRANT_PATH"])
+
+print(f"2. Ładowanie modeli embeddingowych {CONFIG['MODEL_ID']}...")
+
+dense_embedder = SentenceTransformer(CONFIG["DENSE_MODEL"], device="cuda")
+sparse_embedder = SparseTextEmbedding(CONFIG["SPARSE_MODEL"], device="cuda")
+reranker = CrossEncoder(CONFIG["RERANKER_MODEL"], device="cuda")
 
 print(f"3. Inicjalizacja tokenizera...")
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = MODEL_ID,
-    max_seq_length = 32768,
+    model_name = CONFIG["MODEL_ID"],
+    max_seq_length = CONFIG["GENERATING_CONFIG"]["max_seq_length"],
     dtype = None,
     load_in_4bit = True,
 )
 
 FastLanguageModel.for_inference(model)
 
-def search_law(query: str, top_k: int = 10, score_threshold: float = 0.6) -> List[Dict]:
-    """
-    Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
-    """
-    dense_vector = dense_embedder.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
-    sparse_result = list(sparse_embedder.embed([query]))[0]
 
-    qdrant_sparse_vector = models.SparseVector(
-        indices=sparse_result.indices.tolist(),
-        values=sparse_result.values.tolist()
-    )
+def search_law(query: str, top_k: int = CONFIG["RAG"]["TOP_K"], fetch_k: int = CONFIG["RAG"]["FETCH_K"]) -> List[Dict]:
+    """
+    Wyszukuje przepisy prawne w bazie Qdrant na podstawie zapytania użytkownika.
+    Używa hybrydowego podejścia z wektorami gęstymi i rzadkimi oraz rerankingu.
+    """
+
+    dense_vec = dense_embedder.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
     
-    all_hits = []
+    sparse_res = list(sparse_embedder.embed([query]))[0]
+    
+    qdrant_sparse = models.SparseVector(
+        indices=sparse_res.indices.tolist(), 
+        values=sparse_res.values.tolist()
+    )
 
-    if client.collection_exists(SEARCH_COLLECTION):
+    collection = CONFIG["SEARCHING_COLLECTION"]
+    initial_hits = []
+
+    if client.collection_exists(collection):
         hits = client.query_points(
-            collection_name=SEARCH_COLLECTION,
+            collection_name=collection,
             prefetch=[
-                models.Prefetch(
-                    query=dense_vector,
-                    using="dense",
-                    limit=30,
-                ),
-                models.Prefetch(
-                    query=qdrant_sparse_vector,
-                    using="sparse",
-                    limit=30,
-                )
+                models.Prefetch(query=dense_vec, using="dense", limit=fetch_k),
+                models.Prefetch(query=qdrant_sparse, using="sparse", limit=fetch_k)
             ],
             query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=top_k
+            limit=fetch_k
         ).points
+        initial_hits = hits
+        
+        cross_inp = [[query, hit.payload.get('text', '')] for hit in initial_hits]
+        cross_scores = reranker.predict(cross_inp)
 
-        valid_hits = [hit for hit in hits if hit.score > score_threshold]
-        all_hits.extend(valid_hits)
-
-    return all_hits[:top_k]
+        for idx, hit in enumerate(initial_hits):
+            hit.score = cross_scores[idx]
+        
+        reranked_hits = sorted(initial_hits, key=lambda x: x.score, reverse=True)
+        final_hits = reranked_hits[:top_k]
+        
+        return final_hits
+        
+    return []
 
 def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
     """
-    Inteligentnie przepisuje krótkie pytania na pełne 
-    zapytania do bazy, wykorzystując historię rozmowy.
+    Inteligentnie przepisuje zapytania.
+    1. Sprawdza rerankerem czy temat jest kontynuowany.
+    2. Jeśli nie -> zwraca oryginalne pytanie.
+    3. Jeśli tak -> używa LLM do przepisania.
     """
+
     if not chat_history:
         return user_query
 
-    short_history = chat_history[-4:] 
+    last_user_msg = next((m['content'] for m in reversed(chat_history) if m['role'] == 'user'), None)
     
-    rewrite_prompt = f"""
-    Jesteś prawnikiem-lingwistą. Twoim zadaniem jest przetłumaczenie potocznego pytania klienta na profesjonalne zapytanie do wyszukiwarki prawniczej.
-    ZASADY:
-    1. Zamień słowa potoczne na ustawowe (np. "morderstwo" -> "zabójstwo", "ukradł auto" -> "zabór pojazdu mechanicznego").
-    2. Uwzględnij kontekst z historii rozmowy (jeśli jest).
-    3. Wynik ma być jednym, precyzyjnym zdaniem pytającym.
+    if last_user_msg:
+        
+        scores = reranker.predict([[last_user_msg, user_query]])
+        score = scores[0]
+        
+        if score <= -4.0: 
+            return user_query
 
-    HISTORIA: {short_history}
-    OSTATNIE PYTANIE: "{user_query}"
+    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history[-4:]])
 
-    PROFESJONALNE ZAPYTANIE:
-    """
+    rewrite_prompt = CONFIG["REWRITING_PROMPT"].format(
+        short_history=history_text,
+        user_query=user_query
+    )
 
     messages = [{"role": "user", "content": rewrite_prompt}]
+    
+    
     inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs_tensor = tokenizer(inputs, return_tensors="pt").to("cuda")
     
-    with torch.no_grad():
+    with torch.inference_mode():
         outputs = model.generate(
             **inputs_tensor, 
-            max_new_tokens=128,
-            temperature=0.1,  
+            max_new_tokens=CONFIG["REWRITING_CONFIG"]["max_new_tokens"],
+            temperature=CONFIG["REWRITING_CONFIG"]["temperature"],  
             do_sample=True,  
-            use_cache=True
+            use_cache=True,
+            eos_token_id=tokenizer.eos_token_id
         )
     
     rewritten = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
     
-    cleaned = rewritten.replace('"', '').replace("PROFESJONALNE ZAPYTANIE:", "").strip()
+    del inputs_tensor
+    del outputs
+
+    cleaned = rewritten.replace('"', '').replace("PRECYZYJNE ZAPYTANIE:", "").strip()
     
     if len(cleaned) < 3: 
         return user_query
@@ -140,8 +155,8 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
         search_query = user_query
 
     console.print(f"\n[dim]--- Wyszukiwanie przepisów... ---[/dim]")
-    hits = search_law(search_query, top_k=5)
-
+    hits = search_law(search_query)
+    
     context_text = ""
     for hit in hits:
         meta = hit.payload
@@ -150,59 +165,11 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
         text_content = meta.get('full_markdown', meta.get('text', ''))
         
         context_text += f"=== {source_label} | {article_label} ===\n{text_content}\n\n"
-        
+
     if not context_text:
         context_text = "Brak bezpośrednich przepisów w bazie dla tego zapytania."
 
-    system_prompt = """
-    Jesteś ekspertem od polskiego prawa. Twoim zadaniem jest interpretacja przepisów i udzielenie profesjonalnej porady.
-    Działasz w oparciu o dostarczony KONTEKST PRAWNY, który może zawierać różne kodeksy (Karny, Cywilny, Pracy, Wykroczeń) oraz Konstytucję.
-
-    ZASADY:
-    1. Hierarchia: Konstytucja > Ustawy (Kodeksy). Jeśli problem dotyczy praw podstawowych, zacznij od Konstytucji.
-    2. Kontekst: Używaj tylko przepisów dostarczonych w sekcji KONTEKST.
-    3. Precyzja: Odpowiedź musi być konkretna. Jeśli pytanie dotyczy pracy, skup się na Kodeksie Pracy. Jeśli przestępstwa - na Karnym.
-    4. Struktura odpowiedzi:
-    - Podstawa Prawna (wymień artykuły i nazwy aktów)
-    - Analiza (interpretacja sytuacji w świetle przepisów)
-    - Konkluzja (jasne wnioski dla klienta)
-    5. Najważniejsze - jeśli brak przepisów w kontekście, przyznaj to otwarcie i zasugeruj konsultację z prawnikiem.
-    6. Nie wymyślaj przepisów ani nie odwołuj się do nieistniejących artykułów.
-    7. Nie naciągaj kontekstu - jeśli pytanie wykracza poza dostarczone przepisy, przyznaj to.
-
-    RESTKRYKCYJNE ZASADY FORMATOWANIA (MODEL MUSI ICH PRZESTRZEGAĆ):
-    Każda odpowiedź musi składać się wyłącznie z 4 sekcji oznaczonych nagłówkami H2 (##). Nie dodawaj żadnego tekstu przed pierwszą sekcją ani po ostatniej.
-
-    STRUKTURA ODPOWIEDZI:
-
-    ## Podstawa Prawna
-    W tej sekcji wymień przepisy w formie listy wypunktowanej.
-    BEZWZGLĘDNY FORMAT CYTOWANIA:
-    * **Art. {numer} § {numer_paragrafu} {Pełna Nazwa Kodeksu}:** {treść przepisu}
-
-    Zasady dla cytatów:
-    - Jeśli przepis nie ma paragrafu, pomiń znak § i numer paragrafu (np. Art. 148 Kodeksu Karnego:).
-    - Zawsze podawaj pełną nazwę kodeksu (np. "Kodeksu Karnego", a nie "k.k.").
-    - Treść przepisu musi być przytoczona po dwukropku.
-
-    ## Analiza
-    Szczegółowa interpretacja sytuacji w świetle przytoczonych wyżej przepisów. Odnieś się bezpośrednio do faktów z zapytania użytkownika. Wyjaśnij przesłanki (np. "użycie przemocy", "stan nietrzeźwości"). Pisz akapitami.
-
-    ## Konkluzja
-    Jasne i zwięzłe wnioski. Jeśli wynik zależy od zmiennych (np. czy użyto broni), zastosuj listę wypunktowaną, aby pokazać warianty:
-    * Wariant A: konsekwencja.
-    * Wariant B: konsekwencja.
-
-    ## Podsumowanie
-    Jedno lub dwa zdania streszczenia dla klienta, stanowiące "tl;dr" całej porady. Najlepiej by było, gdyby zawierało bezpośrednią, konkretną odpowiedź na pytanie użytkownika.
-
-    Na końcu odpowiedzi dołącz sekcję Źródła, gdzie w jednej linii wymienisz wszystkie cytowane artykuły w formacie:
-    BEZWZGLĘDNY FORMAT WYPISYWANIA ŹRÓDEŁ:
-    "\n\n---\n📚 **Źródła:** Art. {numer} {Pełna Nazwa Kodeksu}."
-    Przykład:
-    "\n\n---\n📚 **Źródła:** Art. 134, 135, 136, 148 Kodeksu Karnego."
-    Nie zapisuj tego jako osobny nagłowek, tylko jako zwykły tekst od nowej linii oraz nie wypisuj paragrafów w źródłach.
-    """
+    system_prompt = CONFIG["SYSTEM_PROMPT"]
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(chat_history)
@@ -215,12 +182,12 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
     
     console.print("[dim]--- Generowanie opinii... ---[/dim]")
     
-    with torch.no_grad():
+    with torch.inference_mode():
         outputs = model.generate(
             **inputs_tensor, 
-            max_new_tokens=2048,
-            temperature=0.2,
-            repetition_penalty=1.05,
+            max_new_tokens=CONFIG["GENERATING_CONFIG"]["max_new_tokens"],
+            temperature=CONFIG["GENERATING_CONFIG"]["temperature"],
+            repetition_penalty=CONFIG["GENERATING_CONFIG"]["repetition_penalty"],
             do_sample=True,
             use_cache=True,
             eos_token_id=tokenizer.eos_token_id
