@@ -80,7 +80,7 @@ CONFIG = {
         - Konkluzja (jasne wnioski dla klienta)
         - Podsumowanie (zwięzłe streszczenie dla klienta)
 
-        RESTKRYKCYJNE ZASADY FORMATOWANIA (MODEL MUSI ICH PRZESTRZEGAĆ):
+        RESTRYKCYJNE ZASADY FORMATOWANIA (MODEL MUSI ICH PRZESTRZEGAĆ):
         Każda odpowiedź musi składać się wyłącznie z 4 sekcji oznaczonych nagłówkami H2 (##). Nie dodawaj żadnego tekstu przed pierwszą sekcją ani po ostatniej.
 
         STRUKTURA ODPOWIEDZI:
