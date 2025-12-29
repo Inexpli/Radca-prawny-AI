@@ -1,7 +1,51 @@
 import textwrap
 
+
+MAIN_COLLECTION = "polskie_prawo"
+
+
+DATA_SOURCES = [
+    {
+        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19970880553/U/D19970553Lj.pdf",
+        "file_path": "data/rag/kodeks_karny.md",
+        "collection_name": MAIN_COLLECTION,
+        "source_label": "Kodeks Karny"
+    },
+    {
+        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19640160093/U/D19640093Lj.pdf",
+        "file_path": "data/rag/kodeks_cywilny.md",
+        "collection_name": MAIN_COLLECTION,
+        "source_label": "Kodeks Cywilny"
+    },
+    {
+        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19740240141/U/D19740141Lj.pdf",
+        "file_path": "data/rag/kodeks_pracy.md",
+        "collection_name": MAIN_COLLECTION,
+        "source_label": "Kodeks Pracy"
+    },
+    {
+        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19640090059/U/D19640059Lj.pdf",
+        "file_path": "data/rag/kodeks_rodzinny_i_opiekunczy.md",
+        "collection_name": MAIN_COLLECTION,
+        "source_label": "Kodeks Rodzinny i Opiekuńczy"
+    },
+    {
+        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19710120114/U/D19710114Lj.pdf",
+        "file_path": "data/rag/kodeks_wykroczen.md",
+        "collection_name": MAIN_COLLECTION,
+        "source_label": "Kodeks Wykroczeń"
+    },
+    {
+        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19970780483/U/D19970483Lj.pdf",
+        "file_path": "data/rag/konstytucja_rp.md",
+        "collection_name": MAIN_COLLECTION,
+        "source_label": "Konstytucja RP"
+    }
+]
+
+
 CONFIG = {
-    "SEARCHING_COLLECTION": "polskie_prawo",
+    "SEARCHING_COLLECTION": MAIN_COLLECTION,
     "SESSIONS_DIR": "sessions",
     "MODEL_ID": "speakleash/Bielik-11B-v2.6-Instruct",
     "QDRANT_PATH": "./qdrant_data",
@@ -30,7 +74,10 @@ CONFIG = {
         "temperature": 0.1,
         "repetition_penalty": 1.05,
     },
+}
 
+
+PROMPTS = {
     "NAMING_SESSION_PROMPT": 
     textwrap.dedent("""
         Jesteś prawnym asystentem, który tworzy zwięzłe tytuły dla rozmów na podstawie pierwszego pytania użytkownika.
@@ -114,3 +161,21 @@ CONFIG = {
         Nie zapisuj tego jako osobny nagłowek, tylko jako zwykły tekst od nowej linii oraz nie wypisuj paragrafów w źródłach.
     """).strip(),
 }
+
+CSS = textwrap.dedent(
+    """
+        <style>
+            div[data-testid="column"] {
+                display: flex;
+                align-items: center; 
+
+            }
+            div[data-testid="stVerticalBlock"] {
+                justify-content: center;
+                align-items: center;
+            }
+            div[data-testid="stVerticalBlock"] > div > div[data-testid="stHorizontalBlock"] {
+                gap: 0.3rem;
+            }
+        </style>
+    """).strip()
