@@ -9,7 +9,7 @@ from unsloth import FastLanguageModel
 from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from config import CONFIG
+from config import CONFIG, PROMPTS
 
 console = Console()
 
@@ -104,7 +104,7 @@ def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
 
     history_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history[-4:]])
 
-    rewrite_prompt = CONFIG["REWRITING_PROMPT"].format(
+    rewrite_prompt = PROMPTS["REWRITING_PROMPT"].format(
         short_history=history_text,
         user_query=user_query
     )
@@ -169,7 +169,7 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
     if not context_text:
         context_text = "Brak bezpośrednich przepisów w bazie dla tego zapytania."
 
-    system_prompt = CONFIG["SYSTEM_PROMPT"]
+    system_prompt = PROMPTS["SYSTEM_PROMPT"]
 
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(chat_history)

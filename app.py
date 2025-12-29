@@ -5,7 +5,7 @@ import uuid
 import streamlit as st
 from datetime import datetime
 from typing import List, Dict, Tuple
-from config import CONFIG
+from config import CONFIG, CSS, PROMPTS
 
 
 st.set_page_config(
@@ -135,7 +135,7 @@ if "session_id" not in st.session_state:
 
 def name_session(question: str) -> str:
     """Nazywa sesję na podstawie pierwszego pytania użytkownika."""
-    prompt = CONFIG["NAMING_SESSION_PROMPT"].format(question=question)
+    prompt = PROMPTS["NAMING_SESSION_PROMPT"].format(question=question)
 
     messages = [{"role": "user", "content": prompt}]
     inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -168,7 +168,7 @@ def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
     
     short_history = chat_history[-4:] 
     
-    rewrite_prompt = CONFIG["REWRITING_PROMPT"].format(
+    rewrite_prompt = PROMPTS["REWRITING_PROMPT"].format(
         short_history="\n".join([f"{m['role']}: {m['content']}" for m in short_history]),
         user_query=user_query
     )
@@ -263,22 +263,7 @@ with st.sidebar:
     st.caption("Poprzednie rozmowy:")
 
     st.markdown(
-        """
-        <style>
-            div[data-testid="column"] {
-                display: flex;
-                align-items: center; 
-
-            }
-            div[data-testid="stVerticalBlock"] {
-                justify-content: center;
-                align-items: center;
-            }
-            div[data-testid="stVerticalBlock"] > div > div[data-testid="stHorizontalBlock"] {
-                gap: 0.3rem;
-            }
-        </style>
-        """, unsafe_allow_html=True
+        CSS, unsafe_allow_html=True
     )
 
     for s in sessions:
@@ -351,7 +336,7 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
             message_placeholder.markdown(response)
         
         with st.spinner("Piszę opinię prawną..."):
-            system_prompt = CONFIG["SYSTEM_PROMPT"]
+            system_prompt = PROMPTS["SYSTEM_PROMPT"]
             
             messages_payload = [{"role": "system", "content": system_prompt}]
             for msg in st.session_state.messages[:-1]:
