@@ -56,6 +56,7 @@ CONFIG = {
     "RAG": {
         "TOP_K": 12,
         "FETCH_K": 100,
+        "RERANKING_THRESHOLD": -4.0,
     },
 
     "NAME_SESSION_CONFIG": {
