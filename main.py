@@ -102,7 +102,7 @@ def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
         scores = reranker.predict([[last_user_msg, user_query]])
         score = scores[0]
         
-        if score <= -4.0: 
+        if score <= CONFIG["RAG"]["RERANKING_THRESHOLD"]: 
             return user_query
 
     history_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history[-4:]])
@@ -124,14 +124,10 @@ def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
             max_new_tokens=CONFIG["REWRITING_CONFIG"]["max_new_tokens"],
             temperature=CONFIG["REWRITING_CONFIG"]["temperature"],  
             do_sample=True,  
-            use_cache=True,
-            eos_token_id=tokenizer.eos_token_id
+            use_cache=True
         )
     
     rewritten = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
-    
-    del inputs_tensor
-    del outputs
 
     cleaned = rewritten.replace('"', '').replace("PRECYZYJNE ZAPYTANIE:", "").strip()
     
