@@ -7,53 +7,7 @@ from qdrant_client.http import models
 from sentence_transformers import SentenceTransformer
 from docling.document_converter import DocumentConverter
 from fastembed import SparseTextEmbedding
-
-
-MAIN_COLLECTION = "polskie_prawo"
-
-DATA_SOURCES = [
-    {
-        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19970880553/U/D19970553Lj.pdf",
-        "file_path": "data/rag/kodeks_karny.md",
-        "collection_name": MAIN_COLLECTION,
-        "source_label": "Kodeks Karny"
-    },
-    {
-        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19640160093/U/D19640093Lj.pdf",
-        "file_path": "data/rag/kodeks_cywilny.md",
-        "collection_name": MAIN_COLLECTION,
-        "source_label": "Kodeks Cywilny"
-    },
-    {
-        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19740240141/U/D19740141Lj.pdf",
-        "file_path": "data/rag/kodeks_pracy.md",
-        "collection_name": MAIN_COLLECTION,
-        "source_label": "Kodeks Pracy"
-    },
-    {
-        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19640090059/U/D19640059Lj.pdf",
-        "file_path": "data/rag/kodeks_rodzinny_i_opiekunczy.md",
-        "collection_name": MAIN_COLLECTION,
-        "source_label": "Kodeks Rodzinny i Opiekuńczy"
-    },
-    {
-        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19710120114/U/D19710114Lj.pdf",
-        "file_path": "data/rag/kodeks_wykroczen.md",
-        "collection_name": MAIN_COLLECTION,
-        "source_label": "Kodeks Wykroczeń"
-    },
-    {
-        "url": "https://isap.sejm.gov.pl/isap.nsf/download.xsp/WDU19970780483/U/D19970483Lj.pdf",
-        "file_path": "data/rag/konstytucja_rp.md",
-        "collection_name": MAIN_COLLECTION,
-        "source_label": "Konstytucja RP"
-    }
-]
-
-
-QDRANT_PATH = "./qdrant_data"
-EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-large"
-SPARSE_MODEL_NAME = "Qdrant/bm25"
+from config import CONFIG, DATA_SOURCES
 
 
 def ensure_directories(path: str) -> None:
@@ -172,7 +126,7 @@ def process_and_index(client: QdrantClient, embedder: SentenceTransformer, confi
     source_label = config["source_label"]
     
     embedding_dim = embedder.get_sentence_embedding_dimension()
-    sparse_embedder = SparseTextEmbedding(model_name=SPARSE_MODEL_NAME)
+    sparse_embedder = SparseTextEmbedding(model_name=CONFIG["SPARSE_MODEL"])
 
     print(f"\n--- Przetwarzanie: {source_label} ({collection_name}) ---")
 
@@ -259,22 +213,24 @@ def process_and_index(client: QdrantClient, embedder: SentenceTransformer, confi
         print(f"BŁĄD: Wystąpił błąd przy przetwarzaniu {source_label}: {str(e)}")
         raise e
     
-
+    
 def main():
 
     print("LOG: Inicjalizacja modelu embeddingów (to może chwilę potrwać)...")
-    embedder = SentenceTransformer(EMBEDDING_MODEL_NAME, device="cuda")
+    embedder = SentenceTransformer(CONFIG["DENSE_MODEL"], device="cuda")
     
     print("LOG: Łączenie z Qdrant...")
-    client = QdrantClient(path=QDRANT_PATH)
+    client = QdrantClient(path=CONFIG["QDRANT_PATH"])
+    
+    collection = CONFIG["SEARCHING_COLLECTION"]
 
-    if client.collection_exists(MAIN_COLLECTION):
-        print(f"LOG: Kolekcja '{MAIN_COLLECTION}' już istnieje w Qdrant.")
-        client.delete_collection(MAIN_COLLECTION)
-        print(f"LOG: Usunięto istniejącą kolekcję '{MAIN_COLLECTION}' dla czystej instalacji.")
+    if client.collection_exists(collection):
+        print(f"LOG: Kolekcja '{collection}' już istnieje w Qdrant.")
+        client.delete_collection(collection)
+        print(f"LOG: Usunięto istniejącą kolekcję '{collection}' dla czystej instalacji.")
 
-    for config in DATA_SOURCES:
-        process_and_index(client, embedder, config)
+    for source_config in DATA_SOURCES:
+        process_and_index(client, embedder, source_config)
     
     print("\nLOG: Wszystkie operacje zakończone pomyślnie.")
 

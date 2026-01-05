@@ -5,7 +5,7 @@ import uuid
 import streamlit as st
 from datetime import datetime
 from typing import List, Dict, Tuple
-from config import CONFIG
+from config import CONFIG, CSS, PROMPTS
 
 
 st.set_page_config(
@@ -59,7 +59,9 @@ except Exception as e:
     st.stop()
 
 import torch
+from transformers import TextIteratorStreamer
 from qdrant_client import models
+from threading import Thread
 
 def get_session_file_path(session_id: str) -> str:
     """Zwraca ścieżkę do pliku sesji na podstawie ID sesji."""
@@ -135,7 +137,7 @@ if "session_id" not in st.session_state:
 
 def name_session(question: str) -> str:
     """Nazywa sesję na podstawie pierwszego pytania użytkownika."""
-    prompt = CONFIG["NAMING_SESSION_PROMPT"].format(question=question)
+    prompt = PROMPTS["NAMING_SESSION_PROMPT"].format(question=question)
 
     messages = [{"role": "user", "content": prompt}]
     inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -160,20 +162,35 @@ def name_session(question: str) -> str:
 
 def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
     """
-    Inteligentnie przepisuje krótkie pytania na pełne 
-    zapytania do bazy, wykorzystując historię rozmowy.
+    Inteligentnie przepisuje zapytania.
+    1. Sprawdza rerankerem czy temat jest kontynuowany.
+    2. Jeśli nie -> zwraca oryginalne pytanie.
+    3. Jeśli tak -> używa LLM do przepisania.
     """
+
     if not chat_history:
         return user_query
+
+    last_user_msg = next((m['content'] for m in reversed(chat_history) if m['role'] == 'user'), None)
     
-    short_history = chat_history[-4:] 
-    
-    rewrite_prompt = CONFIG["REWRITING_PROMPT"].format(
-        short_history="\n".join([f"{m['role']}: {m['content']}" for m in short_history]),
+    if last_user_msg:
+        
+        scores = reranker.predict([[last_user_msg, user_query]])
+        score = scores[0]
+        
+        if score <= CONFIG["RAG"]["RERANKING_THRESHOLD"]: 
+            return user_query
+
+    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history[-4:]])
+
+    rewrite_prompt = PROMPTS["REWRITING_PROMPT"].format(
+        short_history=history_text,
         user_query=user_query
     )
 
     messages = [{"role": "user", "content": rewrite_prompt}]
+    
+    
     inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs_tensor = tokenizer(inputs, return_tensors="pt").to("cuda")
     
@@ -187,11 +204,12 @@ def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
         )
     
     rewritten = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
-    cleaned = rewritten.replace('"', '').replace("PRECYZYJNE ZAPYTANIE:", "").strip()
 
+    cleaned = rewritten.replace('"', '').replace("PRECYZYJNE ZAPYTANIE:", "").strip()
+    
     if len(cleaned) < 3: 
         return user_query
-
+        
     return cleaned
 
 def search_law(query: str, top_k: int = CONFIG["RAG"]["TOP_K"], fetch_k: int = CONFIG["RAG"]["FETCH_K"]) -> List[Dict]:
@@ -263,22 +281,7 @@ with st.sidebar:
     st.caption("Poprzednie rozmowy:")
 
     st.markdown(
-        """
-        <style>
-            div[data-testid="column"] {
-                display: flex;
-                align-items: center; 
-
-            }
-            div[data-testid="stVerticalBlock"] {
-                justify-content: center;
-                align-items: center;
-            }
-            div[data-testid="stVerticalBlock"] > div > div[data-testid="stHorizontalBlock"] {
-                gap: 0.3rem;
-            }
-        </style>
-        """, unsafe_allow_html=True
+        CSS, unsafe_allow_html=True
     )
 
     for s in sessions:
@@ -343,29 +346,35 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
 
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
+        full_response = ""
 
         if not hits or context_text.strip() == "Brak przepisów.":
-            response = """
+            full_response = """
             **Brak danych w bazie.** \n\nNie znalazłem w dostępnych kodeksach przepisów pasujących precyzyjnie do Twojego zapytania. Jako system RAG nie mogę generować porad prawnych z pamięci, aby uniknąć wprowadzenia Cię w błąd nieaktualnymi przepisami.
             """
-            message_placeholder.markdown(response)
+            message_placeholder.markdown(full_response)
+            response = full_response
         
-        with st.spinner("Piszę opinię prawną..."):
-            system_prompt = CONFIG["SYSTEM_PROMPT"]
-            
-            messages_payload = [{"role": "system", "content": system_prompt}]
-            for msg in st.session_state.messages[:-1]:
-                messages_payload.append(msg)
+        else:
+            with st.spinner("Piszę opinię prawną..."):
+                system_prompt = PROMPTS["SYSTEM_PROMPT"]
                 
-            current_input = f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE:\n{prompt}"
-            messages_payload.append({"role": "user", "content": current_input})
+                messages_payload = [{"role": "system", "content": system_prompt}]
+                for msg in st.session_state.messages[:-1]:
+                    messages_payload.append(msg)
+                    
+                current_input = f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE:\n{prompt}"
+                messages_payload.append({"role": "user", "content": current_input})
 
-            model_inputs = tokenizer.apply_chat_template(messages_payload, tokenize=False, add_generation_prompt=True)
-            inputs_tensor = tokenizer(model_inputs, return_tensors="pt").to("cuda")
+                model_inputs = tokenizer.apply_chat_template(messages_payload, tokenize=False, add_generation_prompt=True)
+                inputs_tensor = tokenizer(model_inputs, return_tensors="pt").to("cuda")
 
-            with torch.inference_mode():
-                outputs = model.generate(
-                    **inputs_tensor,
+                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, decode_kwargs={"skip_special_tokens": True})
+
+                generation_kwargs = dict(
+                    input_ids=inputs_tensor.input_ids,
+                    attention_mask=inputs_tensor.attention_mask,
+                    streamer=streamer,
                     max_new_tokens=CONFIG["GENERATING_CONFIG"]["max_new_tokens"],
                     temperature=CONFIG["GENERATING_CONFIG"]["temperature"],
                     repetition_penalty=CONFIG["GENERATING_CONFIG"]["repetition_penalty"],
@@ -373,12 +382,22 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
                     use_cache=True,
                     eos_token_id=tokenizer.eos_token_id
                 )
-            
-            response = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True)
 
-        message_placeholder.markdown(response)
+                thread = Thread(target=model.generate, kwargs=generation_kwargs)
+                thread.start()
+                
+                for new_text in streamer:
+                    clean_text = new_text.replace("<|im_end|>", "")
+                    full_response += clean_text
+                    message_placeholder.markdown(full_response + "▌")
+                
+                thread.join()
+
+            message_placeholder.markdown(full_response)
+            response = full_response
 
     st.session_state.messages.append({"role": "assistant", "content": response})
     save_current_session()
+    
     if len(st.session_state.messages) == 2:
         st.rerun()
