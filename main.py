@@ -2,12 +2,15 @@ import torch
 from rich.rule import Rule
 from rich.text import Text
 from rich.panel import Panel
+from rich.live import Live
+from threading import Thread
 from typing import List, Dict
 from rich.console import Console
 from rich.markdown import Markdown
 from unsloth import FastLanguageModel
 from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient, models
+from transformers import TextIteratorStreamer
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from config import CONFIG, PROMPTS
 
@@ -137,11 +140,12 @@ def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
         
     return cleaned
 
-def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, List[str]]:
+def generate_advice(user_query: str, chat_history: List[Dict]) -> str:
     """
     Generuje opinię prawną na podstawie zapytania użytkownika i historii rozmowy.
+    Obsługuje streaming z ramką (Live Panel).
     """
-    
+
     if chat_history:
         console.print("[dim]--- Kontekstualizacja pytania... ---[/dim]")
         try:
@@ -163,39 +167,57 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> tuple[str, Lis
         source_label = meta.get('source', 'Akt Prawny')
         article_label = meta.get('article', 'Art. ?')
         text_content = meta.get('full_markdown', meta.get('text', ''))
-        
         context_text += f"=== {source_label} | {article_label} ===\n{text_content}\n\n"
 
     if not context_text:
         context_text = "Brak bezpośrednich przepisów w bazie dla tego zapytania."
 
     system_prompt = PROMPTS["SYSTEM_PROMPT"]
-
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(chat_history)
-    
     current_input = f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE UŻYTKOWNIKA:\n{user_query}"
     messages.append({"role": "user", "content": current_input})
 
+    console.print("[dim]--- Generowanie opinii... ---[/dim]")
+
+    
+    stream_iterator = None
+
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs_tensor = tokenizer(prompt, return_tensors="pt").to("cuda")
+
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, decode_kwargs={"skip_special_tokens": True})
     
-    console.print("[dim]--- Generowanie opinii... ---[/dim]")
+    generation_kwargs = dict(
+        input_ids=inputs_tensor.input_ids,
+        attention_mask=inputs_tensor.attention_mask,
+        streamer=streamer,
+        max_new_tokens=CONFIG["GENERATING_CONFIG"]["max_new_tokens"],
+        temperature=CONFIG["GENERATING_CONFIG"]["temperature"],
+        repetition_penalty=CONFIG["GENERATING_CONFIG"]["repetition_penalty"],
+        do_sample=True,
+        use_cache=True,
+        eos_token_id=tokenizer.eos_token_id
+    )
+
+    thread = Thread(target=model.generate, kwargs=generation_kwargs)
+    thread.start()
     
-    with torch.inference_mode():
-        outputs = model.generate(
-            **inputs_tensor, 
-            max_new_tokens=CONFIG["GENERATING_CONFIG"]["max_new_tokens"],
-            temperature=CONFIG["GENERATING_CONFIG"]["temperature"],
-            repetition_penalty=CONFIG["GENERATING_CONFIG"]["repetition_penalty"],
-            do_sample=True,
-            use_cache=True,
-            eos_token_id=tokenizer.eos_token_id
-        )
+    stream_iterator = streamer
     
-    response = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True)
-    
-    return response
+    live_panel = Panel(Markdown("..."), title="Opinia Prawna", border_style="cyan", expand=False)
+    full_response = ""
+
+    with Live(live_panel, console=console, refresh_per_second=12) as live:
+        for new_text in stream_iterator:
+            full_response += new_text
+            
+            clean_response = full_response.replace("<|im_end|>", "")
+            
+            md_content = Markdown(clean_response)
+            live.update(Panel(md_content, title="Opinia Prawna", border_style="cyan", expand=False))
+
+    return full_response.replace("<|im_end|>", "")
 
 
 if __name__ == "__main__":
@@ -219,9 +241,6 @@ if __name__ == "__main__":
                 continue
             
             advice = generate_advice(q, history)
-            
-            md_content = Markdown(advice)
-            console.print(Panel(md_content, title="Opinia Prawna", border_style="cyan", expand=False))
             
             history.append({"role": "user", "content": q}) 
             history.append({"role": "assistant", "content": advice})
