@@ -41,9 +41,9 @@ except Exception as e:
     st.stop()
 
 import torch
+from core import search_law, rewrite_query
 from transformers import TextIteratorStreamer
 from threading import Thread
-from core import search_law, rewrite_query
 
 def get_session_file_path(session_id: str) -> str:
     """Zwraca ścieżkę do pliku sesji na podstawie ID sesji."""

@@ -1,10 +1,10 @@
 import torch
+from unsloth import FastLanguageModel
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient, models
 from typing import List, Dict
 from config import CONFIG, PROMPTS
-from unsloth import FastLanguageModel
 
 
 client = QdrantClient(path=CONFIG["QDRANT_PATH"])
@@ -19,6 +19,8 @@ model, tokenizer = FastLanguageModel.from_pretrained(
     dtype = None,
     load_in_4bit = True,
 )
+
+FastLanguageModel.for_inference(model)
 
 def search_law(query: str, top_k: int = CONFIG["RAG"]["TOP_K"], fetch_k: int = CONFIG["RAG"]["FETCH_K"]) -> List[Dict]:
     """

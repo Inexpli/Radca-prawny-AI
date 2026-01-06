@@ -5,34 +5,21 @@ from rich.live import Live
 from threading import Thread
 from typing import List, Dict
 from rich.console import Console
+from core import search_law, rewrite_query, client_close, model, tokenizer
 from rich.markdown import Markdown
-from unsloth import FastLanguageModel
-from fastembed import SparseTextEmbedding
 from transformers import TextIteratorStreamer
-from sentence_transformers import SentenceTransformer, CrossEncoder
 from config import CONFIG, PROMPTS
-from core import search_law, rewrite_query, client_close
-import torch
 
 console = Console()
 
 print(Text("\n\n"))
-console.print(Rule("Uruchamianie radcy prawnego AI na bazie Bielik-11B-v2.6-Instruct", style="bold blue"))
+console.print(Rule(f"Uruchamianie radcy prawnego AI na bazie {CONFIG['MODEL_ID']}", style="bold blue"))
 
 print("1. Ładowanie Qdrant...")
 
-print(f"2. Ładowanie modeli embeddingowych {CONFIG['MODEL_ID']}...")
+print(f"2. Ładowanie modeli embeddingowych...")
 
 print(f"3. Inicjalizacja tokenizera...")
-
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = CONFIG["MODEL_ID"],
-    max_seq_length = CONFIG["GENERATING_CONFIG"]["max_seq_length"],
-    dtype = None,
-    load_in_4bit = True,
-)
-
-FastLanguageModel.for_inference(model)
 
 def generate_advice(user_query: str, chat_history: List[Dict]) -> str:
     """
