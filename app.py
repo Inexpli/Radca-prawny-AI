@@ -4,7 +4,7 @@ import json
 import uuid
 import streamlit as st
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import Tuple
 from config import CONFIG, CSS, PROMPTS
 
 
@@ -27,30 +27,12 @@ if not os.path.exists(CONFIG["SESSIONS_DIR"]):
 def load_resources() -> Tuple:
     """Ładuje zasoby AI: Qdrant, embeddery i model językowy."""
     print("LOG: Importowanie bibliotek...")
+    from core import model, tokenizer
 
-    from unsloth import FastLanguageModel
-    from qdrant_client import QdrantClient
-    from fastembed import SparseTextEmbedding
-    from sentence_transformers import SentenceTransformer, CrossEncoder
-
-
-    client = QdrantClient(path=CONFIG["QDRANT_PATH"])
-    dense = SentenceTransformer(CONFIG["DENSE_MODEL"], device="cuda")
-    sparse = SparseTextEmbedding(CONFIG["SPARSE_MODEL"], device="cuda")
-    reranker = CrossEncoder(CONFIG["RERANKER_MODEL"], device="cuda")
-
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = CONFIG["MODEL_ID"],
-        max_seq_length = 8192,
-        dtype = None,
-        load_in_4bit = True,
-    )
-    FastLanguageModel.for_inference(model)
-
-    return client, dense, sparse, reranker, model, tokenizer
+    return model, tokenizer
 
 try:
-    client, dense_embedder, sparse_embedder, reranker, model, tokenizer = load_resources()
+    model, tokenizer = load_resources()
 
     loading_placeholder.empty()
     st.toast("System gotowy do pracy!", icon="✅")
@@ -60,8 +42,8 @@ except Exception as e:
 
 import torch
 from transformers import TextIteratorStreamer
-from qdrant_client import models
 from threading import Thread
+from core import search_law, rewrite_query
 
 def get_session_file_path(session_id: str) -> str:
     """Zwraca ścieżkę do pliku sesji na podstawie ID sesji."""
@@ -159,107 +141,6 @@ def name_session(question: str) -> str:
         return "Nowa rozmowa"
 
     return cleaned_title
-
-def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
-    """
-    Inteligentnie przepisuje zapytania.
-    1. Sprawdza rerankerem czy temat jest kontynuowany.
-    2. Jeśli nie -> zwraca oryginalne pytanie.
-    3. Jeśli tak -> używa LLM do przepisania.
-    """
-
-    if not chat_history:
-        return user_query
-
-    last_user_msg = next((m['content'] for m in reversed(chat_history) if m['role'] == 'user'), None)
-    
-    if last_user_msg:
-        
-        scores = reranker.predict([[last_user_msg, user_query]])
-        score = scores[0]
-        
-        if score <= CONFIG["RAG"]["RERANKING_THRESHOLD"]: 
-            return user_query
-
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history[-4:]])
-
-    rewrite_prompt = PROMPTS["REWRITING_PROMPT"].format(
-        short_history=history_text,
-        user_query=user_query
-    )
-
-    messages = [{"role": "user", "content": rewrite_prompt}]
-    
-    
-    inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs_tensor = tokenizer(inputs, return_tensors="pt").to("cuda")
-    
-    with torch.inference_mode():
-        outputs = model.generate(
-            **inputs_tensor, 
-            max_new_tokens=CONFIG["REWRITING_CONFIG"]["max_new_tokens"],
-            temperature=CONFIG["REWRITING_CONFIG"]["temperature"],  
-            do_sample=True,  
-            use_cache=True
-        )
-    
-    rewritten = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
-
-    cleaned = rewritten.replace('"', '').replace("PRECYZYJNE ZAPYTANIE:", "").strip()
-    
-    if len(cleaned) < 3: 
-        return user_query
-        
-    return cleaned
-
-def search_law(query: str, top_k: int = CONFIG["RAG"]["TOP_K"], fetch_k: int = CONFIG["RAG"]["FETCH_K"]) -> List[Dict]:
-    """
-    Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
-    """
-    dense_vec = dense_embedder.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
-    sparse_res = list(sparse_embedder.embed([query]))[0]
-    
-    qdrant_sparse = models.SparseVector(
-        indices=sparse_res.indices.tolist(), 
-        values=sparse_res.values.tolist()
-    )
-
-    initial_hits = []
-
-    collection = CONFIG["SEARCHING_COLLECTION"]
-
-    if client.collection_exists(collection):
-        hits = client.query_points(
-            collection_name=collection,
-            prefetch=[
-                models.Prefetch(
-                    query=dense_vec,
-                    using="dense",
-                    limit=fetch_k,
-                ),
-                models.Prefetch(
-                    query=qdrant_sparse,
-                    using="sparse",
-                    limit=fetch_k,
-                )
-            ],
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=fetch_k
-        ).points
-        initial_hits = hits
-        
-        cross_inp = [[query, hit.payload.get('text', '')] for hit in initial_hits]
-        cross_scores = reranker.predict(cross_inp)
-
-        for idx, hit in enumerate(initial_hits):
-            hit.score = cross_scores[idx]
-        
-        reranked_hits = sorted(initial_hits, key=lambda x: x.score, reverse=True)
-        
-        final_hits = reranked_hits[:top_k]
-
-        return final_hits
-    
 
 with st.sidebar:
     if st.button("Nowy czat", use_container_width=True, type="secondary"):
