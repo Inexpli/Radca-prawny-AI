@@ -12,6 +12,7 @@ from transformers import TextIteratorStreamer
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from config import CONFIG, PROMPTS
 from core import search_law, rewrite_query, client_close
+import torch
 
 console = Console()
 
