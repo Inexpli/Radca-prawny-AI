@@ -47,11 +47,12 @@ DATA_SOURCES = [
 CONFIG = {
     "SEARCHING_COLLECTION": MAIN_COLLECTION,
     "SESSIONS_DIR": "sessions",
-    "MODEL_ID": "speakleash/Bielik-11B-v2.6-Instruct",
+    "MODEL_ID": "speakleash/Bielik-11B-v3.0-Instruct",
     "QDRANT_PATH": "./qdrant_data",
     "DENSE_MODEL": "intfloat/multilingual-e5-large",
     "SPARSE_MODEL": "Qdrant/bm25",
     "RERANKER_MODEL": "sdadas/polish-reranker-roberta-v3",
+    "MAX_HISTORY": 4,
 
     "RAG": {
         "TOP_K": 12,

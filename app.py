@@ -4,7 +4,6 @@ import json
 import uuid
 import streamlit as st
 from datetime import datetime
-from typing import List, Dict, Tuple
 from config import CONFIG, CSS, PROMPTS
 
 
@@ -24,44 +23,24 @@ if not os.path.exists(CONFIG["SESSIONS_DIR"]):
     os.makedirs(CONFIG["SESSIONS_DIR"])
 
 @st.cache_resource
-def load_resources() -> Tuple:
+def load_resources():
     """Ładuje zasoby AI: Qdrant, embeddery i model językowy."""
     print("LOG: Importowanie bibliotek...")
+    from core import LegalAdvisorAI
 
-    from unsloth import FastLanguageModel
-    from qdrant_client import QdrantClient
-    from fastembed import SparseTextEmbedding
-    from sentence_transformers import SentenceTransformer, CrossEncoder
-
-
-    client = QdrantClient(path=CONFIG["QDRANT_PATH"])
-    dense = SentenceTransformer(CONFIG["DENSE_MODEL"], device="cuda")
-    sparse = SparseTextEmbedding(CONFIG["SPARSE_MODEL"], device="cuda")
-    reranker = CrossEncoder(CONFIG["RERANKER_MODEL"], device="cuda")
-
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = CONFIG["MODEL_ID"],
-        max_seq_length = 8192,
-        dtype = None,
-        load_in_4bit = True,
-    )
-    FastLanguageModel.for_inference(model)
-
-    return client, dense, sparse, reranker, model, tokenizer
+    return LegalAdvisorAI()
 
 try:
-    client, dense_embedder, sparse_embedder, reranker, model, tokenizer = load_resources()
+    advisor = load_resources()
+
+    model = advisor.model
+    tokenizer = advisor.tokenizer
 
     loading_placeholder.empty()
     st.toast("System gotowy do pracy!", icon="✅")
 except Exception as e:
     st.error(f"Błąd krytyczny podczas ładowania: {e}")
     st.stop()
-
-import torch
-from transformers import TextIteratorStreamer
-from qdrant_client import models
-from threading import Thread
 
 def get_session_file_path(session_id: str) -> str:
     """Zwraca ścieżkę do pliku sesji na podstawie ID sesji."""
@@ -76,7 +55,7 @@ def save_current_session() -> None:
         user_msgs = [m['content'] for m in st.session_state.messages if m['role'] == 'user']
         if user_msgs:
             question = user_msgs[0]
-            st.session_state.title = name_session(question)
+            st.session_state.title = advisor.name_session(question)
 
     data = {
         "id": st.session_state.session_id,
@@ -134,132 +113,6 @@ def list_past_sessions() -> list:
 
 if "session_id" not in st.session_state:
     init_new_session()
-
-def name_session(question: str) -> str:
-    """Nazywa sesję na podstawie pierwszego pytania użytkownika."""
-    prompt = PROMPTS["NAMING_SESSION_PROMPT"].format(question=question)
-
-    messages = [{"role": "user", "content": prompt}]
-    inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs_tensor = tokenizer(inputs, return_tensors="pt").to("cuda")
-    
-    with torch.inference_mode():
-        outputs = model.generate(
-            **inputs_tensor, 
-            max_new_tokens=CONFIG["NAME_SESSION_CONFIG"]["max_new_tokens"],
-            temperature=CONFIG["NAME_SESSION_CONFIG"]["temperature"],  
-            do_sample=True,  
-            use_cache=True
-        )
-    
-    title = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
-    cleaned_title = title.replace('"', '').strip()
-
-    if len(cleaned_title) < 3: 
-        return "Nowa rozmowa"
-
-    return cleaned_title
-
-def rewrite_query(user_query: str, chat_history: List[Dict]) -> str:
-    """
-    Inteligentnie przepisuje zapytania.
-    1. Sprawdza rerankerem czy temat jest kontynuowany.
-    2. Jeśli nie -> zwraca oryginalne pytanie.
-    3. Jeśli tak -> używa LLM do przepisania.
-    """
-
-    if not chat_history:
-        return user_query
-
-    last_user_msg = next((m['content'] for m in reversed(chat_history) if m['role'] == 'user'), None)
-    
-    if last_user_msg:
-        
-        scores = reranker.predict([[last_user_msg, user_query]])
-        score = scores[0]
-        
-        if score <= CONFIG["RAG"]["RERANKING_THRESHOLD"]: 
-            return user_query
-
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history[-4:]])
-
-    rewrite_prompt = PROMPTS["REWRITING_PROMPT"].format(
-        short_history=history_text,
-        user_query=user_query
-    )
-
-    messages = [{"role": "user", "content": rewrite_prompt}]
-    
-    
-    inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs_tensor = tokenizer(inputs, return_tensors="pt").to("cuda")
-    
-    with torch.inference_mode():
-        outputs = model.generate(
-            **inputs_tensor, 
-            max_new_tokens=CONFIG["REWRITING_CONFIG"]["max_new_tokens"],
-            temperature=CONFIG["REWRITING_CONFIG"]["temperature"],  
-            do_sample=True,  
-            use_cache=True
-        )
-    
-    rewritten = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
-
-    cleaned = rewritten.replace('"', '').replace("PRECYZYJNE ZAPYTANIE:", "").strip()
-    
-    if len(cleaned) < 3: 
-        return user_query
-        
-    return cleaned
-
-def search_law(query: str, top_k: int = CONFIG["RAG"]["TOP_K"], fetch_k: int = CONFIG["RAG"]["FETCH_K"]) -> List[Dict]:
-    """
-    Szuka w każdej kolekcji, łączy wyniki i zwraca X najlepszych globalnie.
-    """
-    dense_vec = dense_embedder.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
-    sparse_res = list(sparse_embedder.embed([query]))[0]
-    
-    qdrant_sparse = models.SparseVector(
-        indices=sparse_res.indices.tolist(), 
-        values=sparse_res.values.tolist()
-    )
-
-    initial_hits = []
-
-    collection = CONFIG["SEARCHING_COLLECTION"]
-
-    if client.collection_exists(collection):
-        hits = client.query_points(
-            collection_name=collection,
-            prefetch=[
-                models.Prefetch(
-                    query=dense_vec,
-                    using="dense",
-                    limit=fetch_k,
-                ),
-                models.Prefetch(
-                    query=qdrant_sparse,
-                    using="sparse",
-                    limit=fetch_k,
-                )
-            ],
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=fetch_k
-        ).points
-        initial_hits = hits
-        
-        cross_inp = [[query, hit.payload.get('text', '')] for hit in initial_hits]
-        cross_scores = reranker.predict(cross_inp)
-
-        for idx, hit in enumerate(initial_hits):
-            hit.score = cross_scores[idx]
-        
-        reranked_hits = sorted(initial_hits, key=lambda x: x.score, reverse=True)
-        
-        final_hits = reranked_hits[:top_k]
-
-        return final_hits
-    
 
 with st.sidebar:
     if st.button("Nowy czat", use_container_width=True, type="secondary"):
@@ -325,76 +178,35 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
 
     with st.status("Analizuję przepisy...", expanded=True) as status:
         st.write("🔄 Analizuję pytanie...")
-        search_query = rewrite_query(prompt, st.session_state.messages[:-1])
-        
         st.write("🔍 Przeszukuję Kodeksy...")
 
-        hits = search_law(search_query)
-        
-        if hits:
-            for hit in hits:
-                meta = hit.payload
-                source_label = meta.get('source', 'Akt Prawny')
-                article_label = meta.get('article', 'Art. ?')
-                text_content = meta.get('full_markdown', meta.get('text', ''))
-                
-                context_text += f"=== {source_label} | {article_label} ===\n{text_content}\n\n"
-        else:
-            context_text = "Brak przepisów."
-            
         status.update(label="Analiza zakończona!", state="complete", expanded=False)
 
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
 
-        if not hits or context_text.strip() == "Brak przepisów.":
-            full_response = """
-            **Brak danych w bazie.** \n\nNie znalazłem w dostępnych kodeksach przepisów pasujących precyzyjnie do Twojego zapytania. Jako system RAG nie mogę generować porad prawnych z pamięci, aby uniknąć wprowadzenia Cię w błąd nieaktualnymi przepisami.
-            """
-            message_placeholder.markdown(full_response)
-            response = full_response
-        
-        else:
-            with st.spinner("Piszę opinię prawną..."):
-                system_prompt = PROMPTS["SYSTEM_PROMPT"]
+        with st.spinner("Piszę opinię prawną..."):
+            system_prompt = PROMPTS["SYSTEM_PROMPT"]
+            
+            messages = [{"role": "system", "content": system_prompt}]
+            for msg in st.session_state.messages[:-1]:
+                messages.append(msg)
                 
-                messages_payload = [{"role": "system", "content": system_prompt}]
-                for msg in st.session_state.messages[:-1]:
-                    messages_payload.append(msg)
-                    
-                current_input = f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE:\n{prompt}"
-                messages_payload.append({"role": "user", "content": current_input})
+            current_input = f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE:\n{prompt}"
+            messages.append({"role": "user", "content": current_input})
 
-                model_inputs = tokenizer.apply_chat_template(messages_payload, tokenize=False, add_generation_prompt=True)
-                inputs_tensor = tokenizer(model_inputs, return_tensors="pt").to("cuda")
+            gen_kwargs, streamer, thread = advisor.generate_response(prompt, st.session_state.messages[:-1])
+            
+            for new_text in streamer:
+                clean_text = new_text.replace("<|im_end|>", "")
+                full_response += clean_text
+                message_placeholder.markdown(full_response + "▌")
+            
+            thread.join()
 
-                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, decode_kwargs={"skip_special_tokens": True})
-
-                generation_kwargs = dict(
-                    input_ids=inputs_tensor.input_ids,
-                    attention_mask=inputs_tensor.attention_mask,
-                    streamer=streamer,
-                    max_new_tokens=CONFIG["GENERATING_CONFIG"]["max_new_tokens"],
-                    temperature=CONFIG["GENERATING_CONFIG"]["temperature"],
-                    repetition_penalty=CONFIG["GENERATING_CONFIG"]["repetition_penalty"],
-                    do_sample=True,
-                    use_cache=True,
-                    eos_token_id=tokenizer.eos_token_id
-                )
-
-                thread = Thread(target=model.generate, kwargs=generation_kwargs)
-                thread.start()
-                
-                for new_text in streamer:
-                    clean_text = new_text.replace("<|im_end|>", "")
-                    full_response += clean_text
-                    message_placeholder.markdown(full_response + "▌")
-                
-                thread.join()
-
-            message_placeholder.markdown(full_response)
-            response = full_response
+        message_placeholder.markdown(full_response)
+        response = full_response
 
     st.session_state.messages.append({"role": "assistant", "content": response})
     save_current_session()
