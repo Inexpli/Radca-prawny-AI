@@ -61,9 +61,6 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> str:
 
     console.print("[dim]--- Generowanie opinii... ---[/dim]")
 
-    
-    stream_iterator = None
-
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs_tensor = tokenizer(prompt, return_tensors="pt").to("cuda")
 
@@ -84,18 +81,15 @@ def generate_advice(user_query: str, chat_history: List[Dict]) -> str:
     thread = Thread(target=model.generate, kwargs=generation_kwargs)
     thread.start()
     
-    stream_iterator = streamer
-    
     live_panel = Panel(Markdown("..."), title="Opinia Prawna", border_style="cyan", expand=False)
     full_response = ""
 
     with Live(live_panel, console=console, refresh_per_second=12) as live:
-        for new_text in stream_iterator:
-            full_response += new_text
+        for new_text in streamer:
+            clean_text = new_text.replace("<|im_end|>", "")
+            full_response += clean_text
             
-            clean_response = full_response.replace("<|im_end|>", "")
-            
-            md_content = Markdown(clean_response)
+            md_content = Markdown(full_response)
             live.update(Panel(md_content, title="Opinia Prawna", border_style="cyan", expand=False))
 
     return full_response.replace("<|im_end|>", "")

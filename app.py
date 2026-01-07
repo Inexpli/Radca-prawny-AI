@@ -240,15 +240,15 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
             with st.spinner("Piszę opinię prawną..."):
                 system_prompt = PROMPTS["SYSTEM_PROMPT"]
                 
-                messages_payload = [{"role": "system", "content": system_prompt}]
+                messages = [{"role": "system", "content": system_prompt}]
                 for msg in st.session_state.messages[:-1]:
-                    messages_payload.append(msg)
+                    messages.append(msg)
                     
                 current_input = f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE:\n{prompt}"
-                messages_payload.append({"role": "user", "content": current_input})
+                messages.append({"role": "user", "content": current_input})
 
-                model_inputs = tokenizer.apply_chat_template(messages_payload, tokenize=False, add_generation_prompt=True)
-                inputs_tensor = tokenizer(model_inputs, return_tensors="pt").to("cuda")
+                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                inputs_tensor = tokenizer(prompt, return_tensors="pt").to("cuda")
 
                 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, decode_kwargs={"skip_special_tokens": True})
 
