@@ -4,7 +4,6 @@ import json
 import uuid
 import streamlit as st
 from datetime import datetime
-from typing import Tuple
 from config import CONFIG, CSS, PROMPTS
 
 
@@ -24,26 +23,24 @@ if not os.path.exists(CONFIG["SESSIONS_DIR"]):
     os.makedirs(CONFIG["SESSIONS_DIR"])
 
 @st.cache_resource
-def load_resources() -> Tuple:
+def load_resources():
     """Ładuje zasoby AI: Qdrant, embeddery i model językowy."""
     print("LOG: Importowanie bibliotek...")
-    from core import model, tokenizer
+    from core import LegalAdvisorAI
 
-    return model, tokenizer
+    return LegalAdvisorAI()
 
 try:
-    model, tokenizer = load_resources()
+    advisor = load_resources()
+
+    model = advisor.model
+    tokenizer = advisor.tokenizer
 
     loading_placeholder.empty()
     st.toast("System gotowy do pracy!", icon="✅")
 except Exception as e:
     st.error(f"Błąd krytyczny podczas ładowania: {e}")
     st.stop()
-
-import torch
-from core import search_law, rewrite_query
-from transformers import TextIteratorStreamer
-from threading import Thread
 
 def get_session_file_path(session_id: str) -> str:
     """Zwraca ścieżkę do pliku sesji na podstawie ID sesji."""
@@ -58,7 +55,7 @@ def save_current_session() -> None:
         user_msgs = [m['content'] for m in st.session_state.messages if m['role'] == 'user']
         if user_msgs:
             question = user_msgs[0]
-            st.session_state.title = name_session(question)
+            st.session_state.title = advisor.name_session(question)
 
     data = {
         "id": st.session_state.session_id,
@@ -116,31 +113,6 @@ def list_past_sessions() -> list:
 
 if "session_id" not in st.session_state:
     init_new_session()
-
-def name_session(question: str) -> str:
-    """Nazywa sesję na podstawie pierwszego pytania użytkownika."""
-    prompt = PROMPTS["NAMING_SESSION_PROMPT"].format(question=question)
-
-    messages = [{"role": "user", "content": prompt}]
-    inputs = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs_tensor = tokenizer(inputs, return_tensors="pt").to("cuda")
-    
-    with torch.inference_mode():
-        outputs = model.generate(
-            **inputs_tensor, 
-            max_new_tokens=CONFIG["NAME_SESSION_CONFIG"]["max_new_tokens"],
-            temperature=CONFIG["NAME_SESSION_CONFIG"]["temperature"],  
-            do_sample=True,  
-            use_cache=True
-        )
-    
-    title = tokenizer.decode(outputs[0][inputs_tensor.input_ids.shape[1]:], skip_special_tokens=True).strip()
-    cleaned_title = title.replace('"', '').strip()
-
-    if len(cleaned_title) < 3: 
-        return "Nowa rozmowa"
-
-    return cleaned_title
 
 with st.sidebar:
     if st.button("Nowy czat", use_container_width=True, type="secondary"):
@@ -206,76 +178,35 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
 
     with st.status("Analizuję przepisy...", expanded=True) as status:
         st.write("🔄 Analizuję pytanie...")
-        search_query = rewrite_query(prompt, st.session_state.messages[:-1])
-        
         st.write("🔍 Przeszukuję Kodeksy...")
 
-        hits = search_law(search_query)
-        
-        if hits:
-            for hit in hits:
-                meta = hit.payload
-                source_label = meta.get('source', 'Akt Prawny')
-                article_label = meta.get('article', 'Art. ?')
-                text_content = meta.get('full_markdown', meta.get('text', ''))
-                
-                context_text += f"=== {source_label} | {article_label} ===\n{text_content}\n\n"
-        else:
-            context_text = "Brak przepisów."
-            
         status.update(label="Analiza zakończona!", state="complete", expanded=False)
 
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
 
-        if not hits or context_text.strip() == "Brak przepisów.":
-            full_response = """
-            **Brak danych w bazie.** \n\nNie znalazłem w dostępnych kodeksach przepisów pasujących precyzyjnie do Twojego zapytania. Jako system RAG nie mogę generować porad prawnych z pamięci, aby uniknąć wprowadzenia Cię w błąd nieaktualnymi przepisami.
-            """
-            message_placeholder.markdown(full_response)
-            response = full_response
-        
-        else:
-            with st.spinner("Piszę opinię prawną..."):
-                system_prompt = PROMPTS["SYSTEM_PROMPT"]
+        with st.spinner("Piszę opinię prawną..."):
+            system_prompt = PROMPTS["SYSTEM_PROMPT"]
+            
+            messages = [{"role": "system", "content": system_prompt}]
+            for msg in st.session_state.messages[:-1]:
+                messages.append(msg)
                 
-                messages = [{"role": "system", "content": system_prompt}]
-                for msg in st.session_state.messages[:-1]:
-                    messages.append(msg)
-                    
-                current_input = f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE:\n{prompt}"
-                messages.append({"role": "user", "content": current_input})
+            current_input = f"KONTEKST PRAWNY:\n{context_text}\n\nPYTANIE:\n{prompt}"
+            messages.append({"role": "user", "content": current_input})
 
-                prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                inputs_tensor = tokenizer(prompt, return_tensors="pt").to("cuda")
+            gen_kwargs, streamer, thread = advisor.generate_response(prompt, st.session_state.messages[:-1])
+            
+            for new_text in streamer:
+                clean_text = new_text.replace("<|im_end|>", "")
+                full_response += clean_text
+                message_placeholder.markdown(full_response + "▌")
+            
+            thread.join()
 
-                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, decode_kwargs={"skip_special_tokens": True})
-
-                generation_kwargs = dict(
-                    input_ids=inputs_tensor.input_ids,
-                    attention_mask=inputs_tensor.attention_mask,
-                    streamer=streamer,
-                    max_new_tokens=CONFIG["GENERATING_CONFIG"]["max_new_tokens"],
-                    temperature=CONFIG["GENERATING_CONFIG"]["temperature"],
-                    repetition_penalty=CONFIG["GENERATING_CONFIG"]["repetition_penalty"],
-                    do_sample=True,
-                    use_cache=True,
-                    eos_token_id=tokenizer.eos_token_id
-                )
-
-                thread = Thread(target=model.generate, kwargs=generation_kwargs)
-                thread.start()
-                
-                for new_text in streamer:
-                    clean_text = new_text.replace("<|im_end|>", "")
-                    full_response += clean_text
-                    message_placeholder.markdown(full_response + "▌")
-                
-                thread.join()
-
-            message_placeholder.markdown(full_response)
-            response = full_response
+        message_placeholder.markdown(full_response)
+        response = full_response
 
     st.session_state.messages.append({"role": "assistant", "content": response})
     save_current_session()

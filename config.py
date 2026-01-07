@@ -52,6 +52,7 @@ CONFIG = {
     "DENSE_MODEL": "intfloat/multilingual-e5-large",
     "SPARSE_MODEL": "Qdrant/bm25",
     "RERANKER_MODEL": "sdadas/polish-reranker-roberta-v3",
+    "MAX_HISTORY": 4,
 
     "RAG": {
         "TOP_K": 12,
