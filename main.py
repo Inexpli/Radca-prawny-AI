@@ -26,6 +26,10 @@ if __name__ == "__main__":
             
             gen_kwargs, streamer, thread = advisor.generate_response(q, history)
 
+            if gen_kwargs is None:
+                advisor.console.print("[red]Brak przepisów w bazie danych. Wykonaj `python ingest_data.py` aby dodać akty prawne do bazy przed zadawaniem pytań.[/red]")
+                break
+
             full_response = ""
             live_panel = Panel(Markdown("..."), title="Opinia Prawna", border_style="cyan", expand=False)
         
