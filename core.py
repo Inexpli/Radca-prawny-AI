@@ -141,7 +141,9 @@ class LegalAdvisorAI:
 
     def generate_response(self, user_query: str, chat_history: List[Dict]) -> str:
         """Główna pętla generująca odpowiedź."""
-        
+
+        error = False   
+
         if chat_history:
             self.console.print("[dim]--- Kontekstualizacja pytania... ---[/dim]")
             try:
@@ -167,7 +169,7 @@ class LegalAdvisorAI:
             context_text += f"=== {source} | {article} ===\n{text_content}\n\n"
         
         if not context_text:
-            context_text = "Brak bezpośrednich przepisów w bazie."
+            return None, None, None
 
         messages = [{"role": "system", "content": PROMPTS["SYSTEM_PROMPT"]}]
         messages.extend(chat_history[-4:])
@@ -194,7 +196,7 @@ class LegalAdvisorAI:
             eos_token_id=self.tokenizer.eos_token_id
         )
 
-        thread = Thread(target=self.model.generate, kwargs=gen_kwargs)
+        thread = Thread(target=self.model.generate, kwargs=gen_kwargs, daemon=True)
         thread.start()
 
         return gen_kwargs, streamer, thread
