@@ -198,12 +198,14 @@ if prompt := st.chat_input("O co chcesz zapytać?"):
 
             gen_kwargs, streamer, thread = advisor.generate_response(prompt, st.session_state.messages[:-1])
             
-            for new_text in streamer:
-                clean_text = new_text.replace("<|im_end|>", "")
-                full_response += clean_text
-                message_placeholder.markdown(full_response + "▌")
-            
-            thread.join()
+            if gen_kwargs is None:
+                full_response = "Brak przepisów w bazie danych. Wykonaj `python ingest_data.py` aby dodać akty prawne do bazy przed zadawaniem pytań."
+
+            else:
+                for new_text in streamer:
+                    clean_text = new_text.replace("<|im_end|>", "")
+                    full_response += clean_text
+                    message_placeholder.markdown(full_response + "▌")
 
         message_placeholder.markdown(full_response)
         response = full_response
